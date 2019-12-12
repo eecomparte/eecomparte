@@ -1,1 +1,6 @@
 
+delete from ccr_conf_permission_module where id_module='GARAN'
+delete from ccr_conf_module_screen where id_module='GARAN';
+delete from ccr_conf_module where id_module='GARAN';
+
+commit;

@@ -1,1 +1,236 @@
 
+create or replace PACKAGE           "CCR_PACKAGE" as
+  -- Obtiene todos los datos de configuración
+  procedure getConfig(salida out sys_refcursor);
+  -- Obtiener todos los datos de los campos asociados a los Tabs
+  procedure getCampos(salida out sys_refcursor);  
+  procedure getAlerts(salida out sys_refcursor,inicio in number default 0 ,fin in number default 1000);
+  procedure getListaTiposCambio(salida out sys_refcursor,inicio in number default 1 ,fin in number default 150, p_processdate in varchar2 DEFAULT null, 
+                            p_identidad in varchar2 DEFAULT null, p_idbasecurrency in varchar2 DEFAULT null);
+  procedure getDatosConfigFilter(listaConfigFilter out sys_refcursor, idTab in varchar2 DEFAULT null, idScreen in varchar2 DEFAULT null);
+  procedure getListaModulos(listaOutPermissionModule out sys_refcursor, idUser in varchar2 DEFAULT null);
+  procedure getListaModulosApp(listaOutPermissionModule out sys_refcursor, idUser in varchar2 DEFAULT null, idApp in varchar2);
+  --procedure getListTabByScreen(listaTab out sys_refcursor, idScreen in varchar2 DEFAULT null);
+  procedure getListTabByScreen(listaTab out sys_refcursor, idScreen in varchar2 DEFAULT null, idUser in varchar2);
+  procedure getListPermissionScreen(listaOutPermissionScreenTree out sys_refcursor, idUser in varchar2 DEFAULT null, idModule in varchar2 DEFAULT null);
+  procedure getListadoTitulosTabla(datos out sys_refcursor);
+  procedure rda_srv_getAcciones(ID_SCREEN in out varchar2,ID_USER in varchar2, BOTONES out sys_refcursor);
+  procedure rda_srv_Acciones(estado out number, mensaje out varchar2,idButton in varchar2,idScreen in varchar2);
+  procedure getDatosConfigReport(datosReport out sys_refcursor,idTab in VARCHAR2,idScreen in VARCHAR2);
+  --procedure  RDA_SRV_GETTICKETINFO(usuarioRDA out sys_refcursor, ticket in VARCHAR2);
+  procedure  RDA_SRV_GETTICKETINFO(usuarioRDA out sys_refcursor, accesoModulos out sys_refcursor, ticket in VARCHAR2);
+  procedure ejecutarAccion(estado out number, mensaje out varchar2, cuerpo in varchar2, msg_ok in varchar2, msg_error in varchar2);
+  procedure getListadoCompleto(datos out sys_refcursor, consulta out varchar2, jsonData in clob);
+--  procedure rda_srv_Edicion(estado out number, mensaje out varchar2, fila out varchar2,operaciones in clob);
+  procedure pruebas(salida_cursor out sys_refcursor,salida_varchar out varchar2);
+/*  procedure srv_rda_getValFiltros(filtrosTab out sys_refcursor, valoresFiltrosTab out sys_refcursor, whereFiltro out varchar2, jsonData in clob);
+  procedure getListadoPorPantallaTab(tipos out sys_refcursor, datos out sys_refcursor, totalDatos out number, filtros out sys_refcursor, valoresFiltros out sys_refcursor, valoresFiltrosList out sys_refcursor, consulta out varchar2, consultaTotal out varchar2, tabla out varchar2, camposEditables out sys_refcursor, valoresCampEditList out sys_refcursor, jsonData in clob);
+  procedure srv_rda_getValFiltrosList(valoresFiltrosListTab out sys_refcursor, idScreen in varchar2, idTab in varchar2);
+  procedure getConfigCamposEditables(camposEditables out sys_refcursor , valoresCampEditList out sys_refcursor, idScreen in varchar2, idTab in varchar2);
+*/
+  procedure srv_rda_getValFiltros(filtrosTab out sys_refcursor, valoresFiltrosTab out sys_refcursor, whereFiltro out varchar2, jsonData in clob);
+  procedure getListadoPorPantallaTab(tipos out sys_refcursor, datos out sys_refcursor, totalDatos out number, filtros out sys_refcursor, valoresFiltros out sys_refcursor, valoresFiltrosList out sys_refcursor, consulta out varchar2, consultaTotal out varchar2, tabla out varchar2, camposEditables out sys_refcursor, valoresCampEditList out sys_refcursor, jsonData in clob);
+  procedure srv_rda_getValFiltrosList(valoresFiltrosListTab out sys_refcursor, idScreen in varchar2, idTab in varchar2);
+  procedure getConfigCamposEditables(camposEditables out sys_refcursor , valoresCampEditList out sys_refcursor, idScreen in varchar2, idTab in varchar2);
+
+  procedure rda_srv_Edicion(estado out number, mensaje out varchar2, fila out varchar2,operaciones in listacruds);
+end ccr_package;
+
+create or replace PACKAGE BODY CCR_PACKAGE_PRUEBAS AS
+/*
+-- SELECT * FROM CCR_CONF_TAB_QUERY WHERE TAB_QUERY LIKE '%INNER%'
+
+BDD_CCR.
+SELECT ROWIDTOCHAR(ROWID) AS ROW_ID, ID_ENTITY, ID_BASE_CURRENCY, ID_QUOTE_CURRENCY, EXCHANGE_NAME, PROCESS_DATE, REAL_RATE FROM BDD_CCR.CCR_HIST_CURRENCY_EXCH_RATE
+
+
+BDD_RBPAIS.
+SELECT L1_CABPAIS.pais_nombre AS Pais, L1_DETALLE.Agrupamiento AS Bic, L1_CABENT.ent_nombre AS Nombre, L1_DETALLE.Item, L1_DETALLE.Etiqueta, L1_DETALLE.Tipo, L1_DETALLE.Techo, L1_DETALLE.Col1/1000 AS Concedido, L1_DETALLE.Col2/1000 AS Disp_Total, L1_DETALLE.Col3/1000 AS Disp_Comercial, L1_DETALLE.Col4/1000 AS Disp_Politico, L1_DETALLE.Col5/1000 AS Valor_Merc, L1_DETALLE.Comentarios, L1_CABENT.Rating_Individual, L1_CABENT.Rating_Soporte, L1_CABENT.Tramo, L1_PIE.tot_col1/1000 AS CONCEDIDO_PAIS, L1_PIE.tot_col2/1000 AS DISPUESTO_PAIS, L1_PIE.tot_col3/1000 AS DISPUESTO_COMERCIAL_PAIS, L1_PIE.tot_col4/1000 AS DISPUESTO_POLITICO_PAIS, L1_PIE.tot_col5/1000 AS VALOR_MERCADO_PAIS
+    FROM BDD_RBPAIS.RBP_Listado1_Pie L1_PIE INNER JOIN ((BDD_RBPAIS.RBP_Listado1_CabPais L1_CABPAIS INNER JOIN BDD_RBPAIS.RBP_Listado1_CabEnt L1_CABENT ON (L1_CABPAIS.Fecha = L1_CABENT.Fecha) AND (L1_CABPAIS.pais_ISO = L1_CABENT.pais_ISO)) INNER JOIN BDD_RBPAIS.RBP_Listado1_Detalle L1_DETALLE ON (L1_CABENT.Fecha = L1_DETALLE.Fecha) AND (L1_CABENT.Agrupamiento = L1_DETALLE.Agrupamiento)) ON (L1_PIE.Fecha = L1_CABENT.Fecha) AND (L1_PIE.pais_ISO = L1_CABENT.pais_ISO)
+    WHERE (L1_DETALLE.Oculto=0)
+    ORDER BY L1_CABPAIS.pais_nombre, L1_DETALLE.Agrupamiento, L1_CABENT.ent_nombre, L1_DETALLE.Orden_Item
+
+
+BDD_CIRC.
+select ROWIDTOCHAR(ROWID) AS ROW_ID, ID_CLASIF, CLASIF, DESCRIPCION_CLASIF, CASE WHEN ACTIVO = '1' THEN 'Sí' WHEN ACTIVO = '0' THEN 'No' END AS ACTIVA 
+from BDD_CIRC.MICRO_RF_CONF_EMISORES_CLASIF
+
+
+ 
+ 
+*/
+procedure pruebas(salida_cursor out sys_refcursor,salida_varchar out vc8)
+as
+queryString varchar2(4000);
+salir boolean:=false;
+posicion number;
+instancias number:=1;
+begin
+  queryString:='select * from dual';
+
+  salida_varchar:='SELECT L1_CABPAIS.pais_nombre AS Pais, L1_DETALLE.Agrupamiento AS Bic, L1_CABENT.ent_nombre AS Nombre, L1_DETALLE.Item, L1_DETALLE.Etiqueta, L1_DETALLE.Tipo, L1_DETALLE.Techo, L1_DETALLE.Col1/1000 AS Concedido, L1_DETALLE.Col2/1000 AS Disp_Total, L1_DETALLE.Col3/1000 AS Disp_Comercial, L1_DETALLE.Col4/1000 AS Disp_Politico, L1_DETALLE.Col5/1000 AS Valor_Merc, L1_DETALLE.Comentarios, L1_CABENT.Rating_Individual, L1_CABENT.Rating_Soporte, L1_CABENT.Tramo, L1_PIE.tot_col1/1000 AS CONCEDIDO_PAIS, L1_PIE.tot_col2/1000 AS DISPUESTO_PAIS, L1_PIE.tot_col3/1000 AS DISPUESTO_COMERCIAL_PAIS, L1_PIE.tot_col4/1000 AS DISPUESTO_POLITICO_PAIS, L1_PIE.tot_col5/1000 AS VALOR_MERCADO_PAIS
+    FROM BDD_RBPAIS.RBP_Listado1_Pie L1_PIE INNER JOIN ((BDD_RBPAIS.RBP_Listado1_CabPais L1_CABPAIS INNER JOIN BDD_RBPAIS.RBP_Listado1_CabEnt L1_CABENT ON (L1_CABPAIS.Fecha = L1_CABENT.Fecha) AND (L1_CABPAIS.pais_ISO = L1_CABENT.pais_ISO)) INNER JOIN BDD_RBPAIS.RBP_Listado1_Detalle L1_DETALLE ON (L1_CABENT.Fecha = L1_DETALLE.Fecha) AND (L1_CABENT.Agrupamiento = L1_DETALLE.Agrupamiento)) ON (L1_PIE.Fecha = L1_CABENT.Fecha) AND (L1_PIE.pais_ISO = L1_CABENT.pais_ISO)
+    WHERE (L1_DETALLE.Oculto=0)
+    ORDER BY L1_CABPAIS.pais_nombre, L1_DETALLE.Agrupamiento, L1_CABENT.ent_nombre, L1_DETALLE.Orden_Item';
+    
+    
+    /*WHILE not salir
+    LOOP
+    END LOOP;*/
+    
+      -- BUSCA CCR
+      posicion:=instr(salida_varchar,'BDD_CCR',1,instancias);
+      salida_varchar := to_char(posicion);
+      -- BUSCA RBP
+      --posicion:=instr(salida_varchar,1,'BDD_RBPAIS',:instancias);
+      -- if posicion
+    
+    
+    
+    
+  open salida_cursor for queryString;
+ 
+end pruebas;
+
+--##########################################################################################################################
+  --RAMA EDICION_MODULOS
+  
+  procedure rda_srv_Edicion(estado out number, mensaje out varchar2, fila out varchar2,operaciones in listacruds)
+  as 
+  laSql varchar(5000);
+  opInsert varchar(5000):='insert into :tabla (:campos) values(:valoresInsert);';
+  opUpdate varchar(5000):='update :tabla set :valoresUpdate where :idRow;';
+  opDelete varchar(5000):='delete from :tabla where :idRow;';
+  opTiposCampos varchar(1000):='select data_type FROM all_tab_columns where table_name = '':tabla'' and column_name = '':column''';
+  queryTiposCampos varchar(2000);
+  campos varchar(5000);
+  valores varchar(10000);
+  tipo varchar2(10);
+
+  begin  
+  --mensaje:='COMPLETADO';
+  --mensaje:=operaciones.listaoperaciones(1).id; 
+  begin
+ 
+  for opera in 1 .. operaciones.listaoperaciones.count
+  loop
+        --fila:=1;
+        fila:=operaciones.listaoperaciones(opera).fila;
+        -- ES UNA OPERACIÓN <<INSERT>>     
+        if operaciones.listaoperaciones(opera).operacion = 'INSERT' then
+          laSql:=opInsert;
+          -- ESTABLECEMOS EL NOMBRE DE LA TABLA
+          laSql:=replace(laSql,':tabla',operaciones.listaoperaciones(opera).tabla);
+          --Indicamos la tabla a la query que obtiene los tipos de campo
+          opTiposCampos:=replace(opTiposCampos,':tabla',operaciones.listaoperaciones(opera).tabla);
+          -- CONSTRUIMOS NOMBRES DE COLUMNAS Y VALORES
+          
+          for i in 1 .. operaciones.listaoperaciones(opera).valores.count 
+          loop
+            -- Construimos los campos y valores del insert
+            --Sacamos el tipo del campo del item i
+            queryTiposCampos:=replace(opTiposCampos,':column',operaciones.listaoperaciones(opera).valores(i).clave);
+            execute immediate queryTiposCampos into tipo;
+            if i=1 then
+              campos:=operaciones.listaoperaciones(opera).valores(i).clave;
+              if tipo='DATE' then
+                valores:='TO_DATE('''||operaciones.listaoperaciones(opera).valores(i).valor||''',''DD/MM/YYYY'')';
+              else
+                if tipo='NUMBER' then
+                  valores:= operaciones.listaoperaciones(opera).valores(i).valor;
+                else
+                  valores:=''''||operaciones.listaoperaciones(opera).valores(i).valor||'''';
+                end if;
+              end if;
+            else
+              --caso en el que no es el primero
+              campos:=campos||','||operaciones.listaoperaciones(opera).valores(i).clave;
+              if tipo='DATE' then
+                valores:=valores||',TO_DATE('''||operaciones.listaoperaciones(opera).valores(i).valor||''',''DD/MM/YYYY'')';
+              else
+                if tipo='NUMBER' then
+                  valores:= valores||','|| operaciones.listaoperaciones(opera).valores(i).valor;
+                else
+                  valores:=valores||','||''''||operaciones.listaoperaciones(opera).valores(i).valor||'''';
+                end if;
+              end if;
+            end if;
+         
+          end loop; 
+          -- ESTABLECEMOS NOMBRES DE COLUMNAS Y VALORES
+          laSql:=replace(laSql,':campos',campos);
+          laSql:=replace(laSql,':valoresInsert',valores);
+          mensaje:=laSql;
+        -- ES UNA OPERACIÓN <<UPDATE>>
+        elsif operaciones.listaoperaciones(opera).operacion = 'UPDATE' then
+          laSql:=opUpdate;
+          -- ESTABLECEMOS EL NOMBRE DE LA TABLA
+          laSql:=replace(laSql,':tabla',operaciones.listaoperaciones(opera).tabla);
+          --Indicamos la tabla a la query que obtiene los tipos de campo
+          opTiposCampos:=replace(opTiposCampos,':tabla',operaciones.listaoperaciones(opera).tabla);
+
+          -- CONSTRUIMOS NOMBRES DE COLUMNAS Y VALORES
+          for i in 1 .. operaciones.listaoperaciones(opera).valores.count 
+          loop
+            -- Construimos los campos y valores del update
+            --Sacamos el tipo del campo del item i
+            queryTiposCampos:=replace(opTiposCampos,':column',operaciones.listaoperaciones(opera).valores(i).clave);
+            execute immediate queryTiposCampos into tipo;
+            if i=1 then
+              if tipo='DATE' then
+                valores:=operaciones.listaoperaciones(opera).valores(i).clave||'=TO_DATE(TRIM('''||operaciones.listaoperaciones(opera).valores(i).valor||'''),''DD/MM/YYYY'')';
+              else
+                if tipo='NUMBER' then
+                  valores:=operaciones.listaoperaciones(opera).valores(i).clave||'='||operaciones.listaoperaciones(opera).valores(i).valor;
+                else
+                  valores:=operaciones.listaoperaciones(opera).valores(i).clave||'=TRIM('''||operaciones.listaoperaciones(opera).valores(i).valor||''')';
+                end if;
+              end if;
+            else
+              if tipo='DATE' then
+                valores:=valores||','||operaciones.listaoperaciones(opera).valores(i).clave||'=TO_DATE(TRIM('''||operaciones.listaoperaciones(opera).valores(i).valor||'''),''DD/MM/YYYY'')';
+              else
+                if tipo='NUMBER' then
+                  valores:=valores||','||operaciones.listaoperaciones(opera).valores(i).clave||'='||operaciones.listaoperaciones(opera).valores(i).valor;
+                else
+                  valores:=valores||','||operaciones.listaoperaciones(opera).valores(i).clave||'=TRIM('''||operaciones.listaoperaciones(opera).valores(i).valor||''')';
+                end if;
+              end if;
+            end if;
+          end loop; 
+          -- ESTABLECEMOS NOMBRES DE COLUMNAS Y VALORES
+          laSql:=replace(laSql,':valoresUpdate',valores);
+          laSql:=replace(laSql,':idRow',operaciones.listaoperaciones(opera).id);
+          
+        elsif operaciones.listaoperaciones(opera).operacion = 'DELETE' then
+          laSql:=opDelete;
+          -- ESTABLECEMOS NOMBRES DE COLUMNAS Y VALORES
+          laSql:=replace(laSql,':tabla',operaciones.listaoperaciones(opera).tabla);
+          laSql:=replace(laSql,':idRow',operaciones.listaoperaciones(opera).id);
+          
+        end if;
+        
+        mensaje:=laSql;
+        execute immediate 'BEGIN '||laSql||' END;';
+        mensaje:='Operación realizada correctamente';
+        estado:=200;
+
+    
+    end loop;
+    end;
+     COMMIT;
+      estado:=200; 
+      mensaje:='Operación realizada correctamente'; 
+      EXCEPTION
+              WHEN OTHERS THEN
+                  ROLLBACK;
+                  estado:=500;
+                  mensaje:= mensaje || '<<LASQL>> ' ||'Error: '|| TO_CHAR(SQLCODE)|| SQLERRM ;
+
+
+
+end rda_srv_Edicion;
+
+--FIN RAMA EDICION_MODULOS
+
+END CCR_PACKAGE_PRUEBAS;

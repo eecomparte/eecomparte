@@ -1,1 +1,1930 @@
 
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_AUDITORIA
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_AUDITORIA" AS
+
+    PROCEDURE INSERT_SELECT(p_TABLA_IN VARCHAR2, p_TABLA_AUD VARCHAR2, reg rowid) AS
+        str_sql VARCHAR2(5000);
+        i NUMBER(2) := 1;
+        cur_colums SYS_REFCURSOR;
+        V_COLUMNAS CLOB;
+    BEGIN 
+        /*SELECT LISTAGG(column_name,',' ) WITHIN group (order by COLUMN_ID) INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;*/
+        SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;
+        v_columnas := substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+        str_sql := 'INSERT INTO ' || p_TABLA_AUD || '( ID_FECHA_REPORT, ' || v_columnas || ') ( SELECT sysdate, '|| v_columnas ||' FROM ' || p_TABLA_IN || ' WHERE rowid = ' || reg || ')';
+        EXECUTE IMMEDIATE str_sql;
+        COMMIT;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error insertando reg en auditoria en ' || p_TABLA_AUD );
+    END INSERT_SELECT;
+
+  PROCEDURE SFTR_AUDIT_INFORME(P_ID_ENTIDAD NUMBER, P_ID_APLICACION NUMBER, P_ID_REPORTE NUMBER, P_ID_ID VARCHAR2, P_CH_CAMBIO VARCHAR2, P_REG rowid, P_GUARDAR_REG BOOLEAN) AS
+    V_TABLA_AUDIT VARCHAR2(250);
+    V_TABLA_REPORTE VARCHAR2(250);
+  BEGIN
+    INSERT INTO centralre_audit_informe(id_entidad,id_aplicacion,id_reporte,dt_fecha,id_id,ch_maquina,ch_user,ch_cambio,id_auditoria) 
+    VALUES (P_ID_ENTIDAD, P_ID_APLICACION, P_ID_REPORTE, SYSDATE, P_ID_ID, SYS_CONTEXT ('USERENV', 'HOST'),SYS_CONTEXT ('USERENV', 'OS_USER'),P_CH_CAMBIO, SEQ_AUDITORIA.nextval);
+    COMMIT;
+    /*SI EL CAMBIO NO ES DE ESTADO SE GUARDA EL REGISTRO*/
+    IF P_GUARDAR_REG THEN
+        SELECT CH_TABLA_AUDIT,CH_TABLA_OUT INTO V_TABLA_AUDIT,V_TABLA_REPORTE FROM CENTRALRE_AUX_REPORTES WHERE id_reporte = P_ID_REPORTE;
+        INSERT_SELECT(V_TABLA_REPORTE, V_TABLA_AUDIT, P_REG);
+        COMMIT;
+    END IF;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error insertando en auditoria');
+  END SFTR_AUDIT_INFORME;
+
+END PKG_CENTRALREP_AUDITORIA;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_CARGA_TEMP
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_CARGA_TEMP" AS
+
+   PROCEDURE INSERT_SELECT_TEMP(p_TABLA_IN VARCHAR2, p_TABLA_TEMP VARCHAR2) AS
+    str_sql VARCHAR2(5000);
+    i NUMBER(2) := 1;
+    cur_colums SYS_REFCURSOR;
+    V_COLUMNAS CLOB;
+
+    BEGIN 
+        --VACIAMOS LA TABLE DE DESTINO
+        EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || p_TABLA_TEMP;
+
+   		SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;
+        v_columnas := substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+        str_sql := 'INSERT  /*APPEND*/ INTO ' || p_TABLA_TEMP || '( ' || v_columnas || ') ( SELECT '|| v_columnas ||' FROM ' || p_TABLA_IN || ')';
+        EXECUTE IMMEDIATE str_sql;
+        COMMIT;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error cargando tabla TEMP en ' || p_TABLA_TEMP );
+    END INSERT_SELECT_TEMP;
+
+  FUNCTION F_VERSION_EMISION(P_CODISIN VARCHAR2) RETURN NUMBER AS
+    v_max_version number;
+  BEGIN
+    SELECT MAX(VERSION) INTO v_max_version FROM CENTRALRE_IN_EMISIONES WHERE CODISIN = P_CODISIN;
+    RETURN v_max_version;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN 0;
+  END F_VERSION_EMISION;
+
+  FUNCTION F_VERSION_CPTY_PERSONAS(P_NUMPERSONA NUMBER) RETURN NUMBER AS
+    v_max_version number;
+  BEGIN
+    SELECT MAX(VERSION) INTO v_max_version FROM CENTRALRE_IN_CPTY_PER WHERE NUMPERSONA = P_NUMPERSONA ;
+    RETURN v_max_version;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN 0;
+  END F_VERSION_CPTY_PERSONAS;
+
+PROCEDURE CARGA_IN_EMISIONES_TEMP AS
+    CURSOR c_fich IS Select * from CENTRALRE_IN_EMISIONES;
+    V_row rowid;
+    V_COLUMNAS CLOB;
+    v_registros clob;
+    str_sql VARCHAR2(32000);
+    v_version number;
+BEGIN
+    SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() ,xmlAGG(XMLELEMENT(e,column_name,',r_reg.').EXTRACT('//text()') ).GetClobVal() INTO v_columnas,v_registros FROM USER_TAB_COLUMNS WHERE table_name = 'CENTRALRE_IN_EMISIONES_TEMP';
+    v_registros:='r_reg.'||regexp_replace(v_registros,',r_reg.','',length(v_registros)-7,1);
+    v_columnas:=substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+
+    FOR r_fich IN c_fich LOOP
+        begin
+        SELECT rowid, version INTO V_row, v_version FROM CENTRALRE_IN_EMISIONES WHERE CODISIN = r_fich.CODISIN AND FECHA_HASTA IS NULL;
+        exception when others then
+            V_row:= null;
+            v_version := 0;
+        end;
+        IF V_row is not null THEN
+            UPDATE CENTRALRE_IN_EMISIONES
+            SET FECHA_HASTA = sysdate -1, usuario = 'CARGA EMISIONES', FECHA_CARGA = SYSDATE
+            WHERE rowid = V_row;
+        END IF;
+    	--Preparamos el insert en la TEMP creandolo en la string str_sql
+        v_version := v_version +1;
+        str_sql := 'INSERT /*APPEND*/ INTO CENTRALRE_IN_EMISIONES (FECHA_DESDE,FECHA_HASTA,USUARIO,FECHA_CARGA,VERSION,'||v_columnas||') values (ROUND(sysdate)-1,NULL,''CARGA FICHERO'', ROUND(sysdate)-1, ' || v_version || ', ' ||v_registros||');';   
+        execute immediate str_sql;
+    END LOOP;
+    COMMIT;
+END CARGA_IN_EMISIONES_TEMP;
+
+PROCEDURE CARGA_IN_OPERACIONES_TEMP AS
+    /*crearemos una tabla temporal intermedia agrupando por PK en la que se cumpla que:
+    -	Si hay un Alta y una baja se eliminarán los registro con esa PK (el alta, la baja y las modificaciones intermedias que tenga).
+    -	Si hay un Alta y una modificación nos quedaremos con la última modificación pero con tipo Alta. Es decir:
+            o	Eliminación registros con esa PK con Fecha_carga menor
+            o	Update del registro que queda a Alta
+    */
+    V_EVENTO VARCHAR2(10) :='M';
+    v_cont NUMBER := 0;
+	V_COLUMNAS CLOB;
+    v_registros clob;
+    str_sql VARCHAR2(32000);
+
+    CURSOR c_PK IS
+    Select REF_REFEGID1, COUNT(*) as contador from CENTRALRE_IN_OPERACIONES_TEMP
+    GROUP BY REF_REFEGID1
+    HAVING COUNT(*) > 1;
+
+    CURSOR c_REG (P_REF_REFEGID1 VARCHAR2) IS
+        SELECT * FROM CENTRALRE_IN_OPERACIONES_TEMP
+        WHERE REF_REFEGID1 = P_REF_REFEGID1;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'TRUNCATE TABLE centralre_in_operaciones_temp';
+        --Insertamos en la TEMP los registros que solo haya un reg por PK
+        SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() ,xmlAGG(XMLELEMENT(e,column_name,',r_reg.').EXTRACT('//text()') ).GetClobVal() INTO v_columnas,v_registros FROM USER_TAB_COLUMNS WHERE table_name = 'CENTRALRE_IN_OPERACIONES_TEMP';
+        v_registros:='r_reg.'||regexp_replace(v_registros,',r_reg.','',length(v_registros)-7,1);
+        v_columnas:=substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+
+        EXECUTE IMMEDIATE 'INSERT /*APPEND*/ INTO centralre_in_operaciones ' ||
+        'Select v_columnas, SYS_CONTEXT (''USERENV'', ''OS_USER''), sysdate from CENTRALRE_IN_OPERACIONES_TEMP where rowid in ' ||
+        '(Select rowid as contador from CENTRALRE_IN_OPERACIONES_TEMP ' ||
+        'GROUP BY REF_REFEGID1 ' ||
+        'HAVING COUNT(*) = 1) '; 
+        COMMIT;
+
+		--Preparamos el insert en la TEMP creandolo en la string str_sql
+        str_sql := 'INSERT /*APPEND*/ INTO centralre_in_operaciones ('||v_columnas||') values ('||v_registros||');';   
+
+		--Insertamos en la TEMP los registros que solo haya más de un reg por PK
+
+        FOR r_PK IN c_PK LOOP
+            v_cont := 0;
+            FOR r_REG IN c_REG(R_PK.REF_REFEGID1) LOOP
+                v_cont := v_cont +1;
+                IF UPPER(R_REG.CAB_EVENTO) = 'ALTA' THEN 
+                    V_EVENTO := 'A';
+                ELSIF UPPER(R_REG.CAB_EVENTO) = 'BAJA' THEN 
+                    V_EVENTO := 'B';
+                ELSE --MODIF
+                    IF  V_EVENTO <> 'B' AND V_EVENTO <> 'A' THEN
+                        V_EVENTO := 'M';    
+                    END IF;
+                END IF;
+                IF v_cont = R_PK.contador and V_EVENTO <> 'B' THEN
+                    execute immediate str_sql;				
+                END IF;
+            END LOOP;
+        END LOOP;
+        COMMIT;
+
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error MAPEO_SFTR_OUT_REUSE');
+  END CARGA_IN_OPERACIONES_TEMP;
+
+PROCEDURE CARGA_IN_MASTER_AGREE_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_MASTER_AGGRE_TEMP','CENTRALRE_IN_MASTER_AGGRE');
+END CARGA_IN_MASTER_AGREE_TEMP;
+
+PROCEDURE CARGA_IN_CAMARAS_AGREE_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_CAMARAS_TEMP','CENTRALRE_IN_CAMARAS');
+END CARGA_IN_CAMARAS_AGREE_TEMP;
+
+PROCEDURE CARGA_IN_CAMARAS_DESAGREE_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_CAMARAS_DES_TEMP','CENTRALRE_IN_CAMARAS_DES');
+END CARGA_IN_CAMARAS_DESAGREE_TEMP;
+
+PROCEDURE CARGA_IN_BILATERALES_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_BILATERALES_TEMP','CENTRALRE_IN_BILATERALES');
+END CARGA_IN_BILATERALES_TEMP;
+
+PROCEDURE CARGA_IN_PRECIOS_TEMP AS
+    --PARA PRECIOS NECESITAMOS SABER EL JOIN QUE SE HA DE HACER PORQUE SOLO SE INCLUIRAN LOS DE QUE SE USEN EN LAS OPERACIONES
+    str_sql VARCHAR2(5000);
+    cur_colums SYS_REFCURSOR;
+    V_COLUMNAS CLOB;
+
+    BEGIN 
+   		SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = 'CENTRALRE_IN_PRECIOS_TEMP';
+        v_columnas := substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+        str_sql := 'INSERT INTO CENTRALRE_IN_PRECIOS ( SELECT '|| v_columnas ||' FROM CENTRALRE_IN_PRECIOS_TEMP WHERE CODISIN EXIST (SELECT PRI_SEC_CODISIN FROM CENTRALRE_IN_OPERACIONES))';
+        EXECUTE IMMEDIATE str_sql;
+        COMMIT;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error cargando tabla CENTRALRE_IN_PRECIOS_TEMP en CENTRALRE_IN_PRECIOS' );
+END CARGA_IN_PRECIOS_TEMP;
+
+PROCEDURE CARGA_IN_CPTY_PERSONAS_TEMP AS
+    CURSOR c_fich IS Select * from CENTRALRE_IN_CPTY_PER_TEMP;
+    V_row rowid;
+    V_COLUMNAS CLOB;
+    v_registros clob;
+    str_sql VARCHAR2(32000);
+    v_version number;
+BEGIN
+
+    SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() ,xmlAGG(XMLELEMENT(e,column_name,',r_reg.').EXTRACT('//text()') ).GetClobVal() INTO v_columnas,v_registros FROM USER_TAB_COLUMNS WHERE table_name = 'CENTRALRE_IN_CPTY_PER_TEMP';
+    v_registros:='r_reg.'||regexp_replace(v_registros,',r_reg.','',length(v_registros)-7,1);
+    v_columnas:=substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+
+    FOR r_fich IN c_fich LOOP
+        begin
+        SELECT rowid, version INTO V_row, v_version FROM CENTRALRE_IN_CPTY_PER WHERE NUMPERSONA = r_fich.NUMPERSONA AND FECHA_HASTA IS NULL;
+        exception when others then
+            V_row:= null;
+            v_version := 0;
+        end;
+        IF V_row is not null THEN
+            UPDATE CENTRALRE_IN_CPTY_PER
+            SET FECHA_HASTA = sysdate -1, usuario = 'CARGA CPTY_PER', FECHA_CARGA = SYSDATE
+            WHERE rowid = V_row;
+        END IF;
+    	--Preparamos el insert en la TEMP creandolo en la string str_sql
+        v_version := v_version +1;
+        str_sql := 'INSERT /*APPEND*/ INTO CENTRALRE_IN_CPTY_PER (FECHA_DESDE,FECHA_HASTA,USUARIO,FECHA_CARGA,VERSION,'||v_columnas||') values (ROUND(sysdate)-1,NULL,''CARGA FICHERO'', ROUND(sysdate)-1, ' || v_version || ', ' ||v_registros||');';   
+        execute immediate str_sql;
+    END LOOP;
+    COMMIT;
+END CARGA_IN_CPTY_PERSONAS_TEMP;
+
+PROCEDURE CARGA_IN_LCH_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_LCH_TEMP','CENTRALRE_IN_LCH');
+END CARGA_IN_LCH_TEMP;
+
+PROCEDURE CARGA_IN_BME_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_BME_TEMP','CENTRALRE_IN_BME');
+END CARGA_IN_BME_TEMP;
+
+PROCEDURE CARGA_IN_EUREX_TEMP AS
+BEGIN
+    INSERT_SELECT_TEMP('CENTRALRE_IN_EUREX_TEMP','CENTRALRE_IN_EUREX');
+END CARGA_IN_EUREX_TEMP;
+
+END PKG_CENTRALREP_CARGA_TEMP;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_HISTORIFICACION
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_HISTORIFICACION" AS
+
+  PROCEDURE INSERT_SELECT_OUT(p_TABLA_IN VARCHAR2, p_TABLA_HIST VARCHAR2) AS
+    str_sql VARCHAR2(5000);
+    i NUMBER(2) := 1;
+    cur_colums SYS_REFCURSOR;
+    V_COLUMNAS CLOB;
+
+    BEGIN 
+   		SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;
+        v_columnas := substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+        /*SELECT LISTAGG(column_name,',' ) WITHIN group (order by COLUMN_ID) INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;*/     
+        str_sql := 'INSERT INTO ' || p_TABLA_HIST || '( ID_FECHA_REPORT, USUARIO, ' || v_columnas || ') ( SELECT sysdate, SYS_CONTEXT (''USERENV'', ''OS_USER'') '|| v_columnas ||' FROM ' || p_TABLA_IN || ' WHERE ID_STATUS = 5 AND (DT_REPTIME = ROUND(sysdate)-1 OR DT_REPTIME = ROUND(sysdate)-2)';
+        EXECUTE IMMEDIATE str_sql;
+        COMMIT;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error historificando en ' || p_TABLA_HIST );
+    END INSERT_SELECT_OUT;
+
+    PROCEDURE INSERT_SELECT_IN(p_TABLA_IN VARCHAR2, p_TABLA_HIST VARCHAR2) AS
+    str_sql VARCHAR2(5000);
+    i NUMBER(2) := 1;
+    cur_colums SYS_REFCURSOR;
+    V_COLUMNAS CLOB;
+
+    BEGIN 
+   		SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;
+        v_columnas := substr(trim(v_columnas),1, length(trim(v_columnas))-1);
+        /*SELECT LISTAGG(column_name,',' ) WITHIN group (order by COLUMN_ID) INTO v_columnas FROM USER_TAB_COLUMNS WHERE table_name = p_TABLA_IN;*/     
+        str_sql := 'INSERT INTO ' || p_TABLA_HIST || '( FECHA_CARGA, USUARIO, ' || v_columnas || ') ( SELECT sysdate, SYS_CONTEXT (''USERENV'', ''OS_USER'') '|| v_columnas ||' FROM ' || p_TABLA_IN || ')';
+        EXECUTE IMMEDIATE str_sql;
+        COMMIT;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error historificando en ' || p_TABLA_HIST );
+    END INSERT_SELECT_IN;
+
+  PROCEDURE HISTORIFICACION_CENTRALREP(p_entidad IN NUMBER, p_aplicacion IN NUMBER) AS
+    cursor cur_reports is Select CH_TABLA_OUT, CH_TABLA_HIST FROM CENTRALRE_AUX_REPORTES WHERE id_entidad = P_ENTIDAD AND id_aplicacion = P_APLICACION;
+  BEGIN
+    --Borramos los registros de más de 5 años
+    HISTORIFICACION_CENTRALREP_DEL(p_entidad, p_aplicacion);
+    FOR r_report in cur_reports
+    LOOP
+        --Historificamos los registro de la tabla OUT
+      INSERT_SELECT_OUT(r_report.CH_TABLA_OUT,r_report.CH_TABLA_HIST);
+    END LOOP;
+  END HISTORIFICACION_CENTRALREP;
+
+  PROCEDURE HISTORIFICACION_TABLAS_IN(p_entidad IN NUMBER, p_aplicacion IN NUMBER) AS
+    cursor cur_reports is Select CH_TABLA_IN, CH_TABLA_HIST FROM CENTRALRE_AUX_TABLA_IN WHERE id_entidad = P_ENTIDAD AND id_aplicacion = P_APLICACION AND CH_TABLA_HIST IS NOT NULL;
+  BEGIN
+    --Borramos los registros de más de 5 años
+    HISTORIFICACION_TABLAS_IN_DEL(p_entidad, p_aplicacion);
+    FOR r_report in cur_reports
+    LOOP
+      INSERT_SELECT_IN(r_report.CH_TABLA_IN,r_report.CH_TABLA_HIST);
+    END LOOP;
+  END HISTORIFICACION_TABLAS_IN;
+
+PROCEDURE HISTORIFICACION_CENTRALREP_DEL(p_entidad IN NUMBER, p_aplicacion IN NUMBER) AS
+    cursor cur_reports is Select CH_TABLA_HIST FROM CENTRALRE_AUX_REPORTES WHERE id_entidad = P_ENTIDAD AND id_aplicacion = P_APLICACION;
+    str_sql VARCHAR2(5000);
+  BEGIN
+    FOR r_report in cur_reports
+    LOOP
+      str_sql := 'DELETE ' || r_report.CH_TABLA_HIST || ' WHERE ID_FECHA_REPORT < add_months(sysdate,-60)';
+      EXECUTE IMMEDIATE str_sql;
+      COMMIT;
+    END LOOP;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error borrando tabla historificación');   
+  END HISTORIFICACION_CENTRALREP_DEL;
+
+  PROCEDURE HISTORIFICACION_TABLAS_IN_DEL(p_entidad IN NUMBER, p_aplicacion IN NUMBER) AS
+    cursor cur_reports is Select CH_TABLA_HIST FROM CENTRALRE_AUX_TABLA_IN WHERE id_entidad = P_ENTIDAD AND id_aplicacion = P_APLICACION AND CH_TABLA_HIST IS NOT NULL;
+    str_sql VARCHAR2(5000);
+  BEGIN
+    FOR r_report in cur_reports
+    LOOP
+      str_sql := 'DELETE ' || r_report.CH_TABLA_HIST || ' WHERE ID_FECHA_REPORT < add_months(sysdate,-60)';
+      EXECUTE IMMEDIATE str_sql;
+      COMMIT;
+    END LOOP;
+    EXCEPTION WHEN OTHERS THEN
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2 ('Error borrando tabla historificación');   
+  END HISTORIFICACION_TABLAS_IN_DEL;
+
+END PKG_CENTRALREP_HISTORIFICACION;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_MAPEO
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_MAPEO" AS
+
+  PROCEDURE MAPEO_SFTR_OUT_COUNTERPARTY AS
+  BEGIN
+    execute immediate 'select 1 into d from dual';
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_MAPEO.MAPEO_SFTR_OUT_COUNTERPARTY
+    NULL;
+    exception when others then
+        dbms_output.put_line('Error 12');
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error MAPEO_SFTR_OUT_COUNTERPARTY');
+  END MAPEO_SFTR_OUT_COUNTERPARTY;
+
+  PROCEDURE MAPEO_SFTR_OUT_LOAN_COLLATERAL AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_MAPEO.MAPEO_SFTR_OUT_LOAN_COLLATERAL
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error MAPEO_SFTR_OUT_LOAN_COLLATERAL');
+  END MAPEO_SFTR_OUT_LOAN_COLLATERAL;
+
+  PROCEDURE MAPEO_SFTR_OUT_MARGINS AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_MAPEO.MAPEO_SFTR_OUT_MARGINS
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error MAPEO_SFTR_OUT_MARGINS');
+  END MAPEO_SFTR_OUT_MARGINS;
+
+  PROCEDURE MAPEO_SFTR_OUT_REUSE AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_MAPEO.MAPEO_SFTR_OUT_REUSE
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error MAPEO_SFTR_OUT_REUSE');
+  END MAPEO_SFTR_OUT_REUSE;
+
+  PROCEDURE MAPEO_SFTR (p_tipo_carga NUMBER) AS
+  BEGIN
+    IF p_tipo_carga = 1 THEN
+    --Carga Intraday solo LOAN_COLLATERAL
+            MAPEO_SFTR_OUT_LOAN_COLLATERAL;
+            --HISTORIFICACION_IN_OPERACIONES;
+    ELSE
+    ----Carga EOD, llamamos a los 4 procedimientos para mapear las tablas OUT
+          MAPEO_SFTR_OUT_COUNTERPARTY;
+          MAPEO_SFTR_OUT_LOAN_COLLATERAL;
+          MAPEO_SFTR_OUT_MARGINS;
+          MAPEO_SFTR_OUT_REUSE;
+          --HISTORIFICACION_IN_OPERACIONES;
+          --HISTORIFICACION_IN_PRECIOS;
+    END IF;
+  END MAPEO_SFTR;
+
+END PKG_CENTRALREP_MAPEO;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_PREVALIDACIONES
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_PREVALIDACIONES" 
+AS 
+  PROCEDURE VALIDA_TA_FECHAVALOR(P_LINEA_COLLATERAL IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE, RESULTADO OUT NUMBER) AS
+	BEGIN
+    resultado:=0;
+    IF P_LINEA_COLLATERAL.DT_MATUDATE >= P_LINEA_COLLATERAL.DT_VALUEDATE OR P_LINEA_COLLATERAL.DT_MATUDATE>= P_LINEA_COLLATERAL.DT_TERMINADATE THEN
+		    resultado:= 1;
+		END IF;
+
+	END VALIDA_TA_FECHAVALOR;
+
+  PROCEDURE VALIDA_UNCOL_FALSE(P_LINEA_COLLATERAL IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE, RESULTADO OUT NUMBER)
+  AS
+  BEGIN
+      RESULTADO:=1;
+      IF P_LINEA_COLLATERAL.CH_UNCOLLSL ='FALSE' THEN
+          IF P_LINEA_COLLATERAL.CH_NETEXPCOLL IS NOT NULL THEN
+              RESULTADO:=0;
+          ELSE IF P_LINEA_COLLATERAL.CH_NETEXPCOLL = 'TRUE' AND P_LINEA_COLLATERAL.DT_VALUECOLLADATE IS NULL THEN
+                   RESULTADO:=0;
+               ELSE IF P_LINEA_COLLATERAL.CH_NETEXPCOLL = 'FALSE' AND P_LINEA_COLLATERAL.DT_VALUECOLLADATE IS NOT NULL THEN
+                        RESULTADO:=0;
+                    END IF;
+               END IF;
+          END IF;
+      ELSE
+          IF P_LINEA_COLLATERAL.CH_NETEXPCOLL IS NOT NULL OR P_LINEA_COLLATERAL.DT_VALUECOLLADATE IS NOT NULL THEN
+              RESULTADO:=0;
+          END IF;
+      END IF;
+  END VALIDA_UNCOL_FALSE;
+END PKG_CENTRALREP_PREVALIDACIONES;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_SP_STATUS
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_SP_STATUS" 
+AS   
+  FUNCTION OBTENER_CAMPOS_STATUS(P_TABLA_NAME IN VARCHAR2) RETURN VARCHAR2 AS
+    SALIDA VARCHAR2(4000);
+    BEGIN
+    SALIDA:='SELECT STA.CH_STATUS_CR,STA.CH_STATUS_REGIS_TR,STA.SUMMARY_STATUS,STA.COLOR, TAB.* FROM  CENTRALRE.';
+    SALIDA:=SALIDA||P_TABLA_NAME||' TAB INNER JOIN  CENTRALRE.CENTRALRE_AUX_STATUS STA ON STA.ID_STATUS=TAB.ID_STATUS'; 
+    dbms_output.put_line(SALIDA);
+    RETURN SALIDA;
+  END OBTENER_CAMPOS_STATUS;
+
+  PROCEDURE OBTENER_CAMPOS_STATUS_CTPARTY(SALIDA OUT SYS_REFCURSOR) AS
+    /* Se debede obtener los datos de la tabla SFTR_OUT_COUNTERPARTY a mostrar en el datagrid principal de la pantalla STATUS */
+    BEGIN
+        OPEN SALIDA FOR OBTENER_CAMPOS_STATUS('SFTR_OUT_COUNTERPARTY');
+    EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al obtener los campos de status');
+    END OBTENER_CAMPOS_STATUS_CTPARTY;
+
+  PROCEDURE INSERT_STATUS_CTPARTY(P_ID_COUNTERPARTY IN VARCHAR2, P_CH_SUBMITENTITY IN VARCHAR2, P_CH_NATURE IN VARCHAR2, P_CH_SECTOR IN VARCHAR2,P_CH_ADSECTORCLASS IN VARCHAR2,
+                                    P_CH_BRANCH IN VARCHAR2,P_CH_BRANCH2 IN VARCHAR2,P_CH_SIDE IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COUNTER2 IN VARCHAR2,P_CH_COUNTRY2 IN VARCHAR2,
+                                    P_CH_BENEFICIARY IN VARCHAR2,P_CH_3PARTYAG IN VARCHAR2,P_CH_BROKER IN VARCHAR2,P_CH_CLEARMEMBER IN VARCHAR2,P_CH_CSD IN VARCHAR2,P_CH_AGLENDER IN VARCHAR2,
+                                    RESULTADO OUT NUMBER) AS
+    /*Se deben de insertar los datos que tenemos rellenados en nuestro modal e insertarlos en la tabla SFTR_OUT_COUNTERPARTY.*/
+        V_COUNT NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO V_COUNT FROM  CENTRALRE.SFTR_OUT_COUNTERPARTY WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+         IF V_COUNT=0 THEN
+
+            INSERT INTO SFTR_OUT_COUNTERPARTY(DT_ATENEACR,CH_SUBMITENTITY,ID_COUNTERPARTY,CH_NATURE,CH_SECTOR,CH_ADSECTORCLASS,CH_BRANCH,CH_BRANCH2,CH_SIDE,CH_ENTITYRESPON,CH_COUNTER2,
+                                              CH_COUNTRY2,CH_BENEFICIARY,CH_3PARTYAG,CH_BROKER,CH_CLEARMEMBER,CH_CSD,CH_AGLENDER,ID_STATUS)
+                        VALUES(SYSDATE,P_CH_SUBMITENTITY, P_ID_COUNTERPARTY,P_CH_NATURE , P_CH_SECTOR, P_CH_ADSECTORCLASS,P_CH_BRANCH,P_CH_BRANCH2,P_CH_SIDE,P_CH_ENTITYRESPON,P_CH_COUNTER2,
+                                              P_CH_COUNTRY2,P_CH_BENEFICIARY,P_CH_3PARTYAG,P_CH_BROKER,P_CH_CLEARMEMBER,P_CH_CSD,P_CH_AGLENDER,0);
+                                  dbms_output.put_line(v_count);
+            RESULTADO:=1;
+        ELSE 
+            RESULTADO:=0;   
+        END IF;
+    dbms_output.put_line(resultado);
+        COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al insertar los datos en SFTR_OUT_COUNTERPARTY');
+   END INSERT_STATUS_CTPARTY;
+
+
+  PROCEDURE MODIFY_STATUS_CTPARTY(P_ID_COUNTERPARTY IN VARCHAR2, P_CH_SUBMITENTITY IN VARCHAR2, P_CH_NATURE IN VARCHAR2, P_CH_SECTOR IN VARCHAR2,P_CH_ADSECTORCLASS IN VARCHAR2,
+                                    P_CH_BRANCH VARCHAR2,P_CH_BRANCH2 IN VARCHAR2,P_CH_SIDE IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COUNTER2 IN VARCHAR2,P_CH_COUNTRY2 IN VARCHAR2,
+                                    P_CH_BENEFICIARY VARCHAR2,P_CH_3PARTYAG IN VARCHAR2,P_CH_BROKER IN VARCHAR2,P_CH_CLEARMEMBER IN VARCHAR2,P_CH_CSD IN VARCHAR2,P_CH_AGLENDER IN VARCHAR2, 
+                                    RESULTADO OUT NUMBER) AS
+    /*Se deben de actualizar los valores que se pasan por el INPUT en el registro en el que coincida la PK.*/
+        V_COUNT NUMBER;
+    BEGIN
+        UPDATE SFTR_OUT_COUNTERPARTY
+            SET CH_SUBMITENTITY = P_CH_SUBMITENTITY,CH_NATURE=P_CH_NATURE,CH_SECTOR=P_CH_SECTOR,CH_ADSECTORCLASS=P_CH_ADSECTORCLASS,CH_BRANCH=P_CH_BRANCH,
+                CH_BRANCH2=P_CH_BRANCH2,CH_SIDE=P_CH_SIDE,CH_ENTITYRESPON=P_CH_ENTITYRESPON,CH_COUNTER2=P_CH_COUNTER2,CH_COUNTRY2=P_CH_COUNTRY2, 
+                CH_BENEFICIARY=P_CH_BENEFICIARY,CH_3PARTYAG=P_CH_3PARTYAG,CH_BROKER=P_CH_BROKER,CH_CLEARMEMBER=P_CH_CLEARMEMBER,CH_CSD=P_CH_CSD, 
+                CH_AGLENDER = P_CH_AGLENDER,ID_STATUS=0
+            WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+        RESULTADO:=SQL%ROWCOUNT;
+        COMMIT; 
+        dbms_output.put_line(resultado);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar algún campo de SFTR_OUT_COUNTERPARTY');
+   END MODIFY_STATUS_CTPARTY;
+
+  PROCEDURE DELETE_STATUS_UNICO(P_TABLE_NAME IN VARCHAR2, P_PKVALUE IN VARCHAR2, RESULTADO OUT NUMBER) AS
+      V_PK_NAME VARCHAR2(30);
+      BEGIN
+          SELECT TB.COLUMN_NAME INTO V_PK_NAME
+          FROM USER_CONSTRAINTS CONS
+          INNER JOIN USER_CONS_COLUMNS COLS ON CONS.CONSTRAINT_NAME = COLS.CONSTRAINT_NAME 
+          INNER JOIN USER_TAB_COLUMNS TB ON COLS.TABLE_NAME = TB.TABLE_NAME AND COLS.COLUMN_NAME = TB.COLUMN_NAME
+          WHERE COLS.TABLE_NAME = P_TABLE_NAME
+          AND CONS.CONSTRAINT_TYPE = 'P';
+          dbms_output.put_line('DELETE FROM  CENTRALRE.'||P_TABLE_NAME||' WHERE '||V_PK_NAME||'='''||P_PKVALUE||'''');
+          EXECUTE IMMEDIATE 'DELETE FROM  CENTRALRE.'||P_TABLE_NAME||' WHERE '||V_PK_NAME||'='''||P_PKVALUE||'''';
+          RESULTADO:=SQL%ROWCOUNT;
+      EXCEPTION
+          WHEN OTHERS THEN
+              RESULTADO:=0; 
+              PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar 1 registro de '||P_TABLE_NAME);             
+  END DELETE_STATUS_UNICO;
+
+-- PROCEDURE DELETE_STATUS_CTPARTY_UNICO(P_ID_COUNTERPARTY IN VARCHAR2, RESULTADO OUT NUMBER) AS
+--    /* Borra un registro de la tabla SFTR_OUT_COUNTERPARTY */
+--    BEGIN
+--          DELETE FROM SFTR_OUT_COUNTERPARTY WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+--          IF SQL%ROWCOUNT=0 THEN
+--             RESULTADO:=0;
+--          ELSE
+--             RESULTADO:=1;
+--          END IF;
+--    EXCEPTION
+--        WHEN OTHERS THEN
+--            RESULTADO:=0; 
+--              PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar 1 registro de SFTR_OUT_COUNTERPARTY');        
+--  END DELETE_STATUS_CTPARTY_UNICO;
+
+  PROCEDURE DELETE_STATUS_CTPARTY(P_LIST_ID_USUARIO IN VARCHAR2, RESULTADO OUT NUMBER) AS
+     /*Se deben de eliminar uno o varios registros de la tabla SFTR_OUT_COUNTERPARTY a partir del listado de PKs que se pasarán por el INPUT.*/
+         V_LIST_ID_USUARIO VARCHAR2(4000);
+         V_VALOR varchar2(4000);
+         V_COUNT NUMBER;
+         --v_array apex_application_global.vc_arr2;
+     BEGIN
+         --v_array := apex_util.string_to_table(P_LIST_ID_USUARIO, ',');
+         --FOR V_I IN 1 .. v_array.last LOOP
+         --    --PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_CTPARTY_UNICO(V_ARRAY(V_I),RESULTADO);
+         --   PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_UNICO('SFTR_OUT_COUNTERPARTY',V_ARRAY(V_I),RESULTADO);
+         --   EXIT WHEN RESULTADO<>1;
+         --END LOOP;
+         V_LIST_ID_USUARIO := P_LIST_ID_USUARIO || ',';
+         V_COUNT:=LENGTH(V_LIST_ID_USUARIO)-LENGTH(REPLACE(V_LIST_ID_USUARIO,',',''));
+         FOR I IN 1..V_COUNT LOOP
+            SELECT REGEXP_SUBSTR(V_LIST_ID_USUARIO,'[^,]+',1,I) INTO V_VALOR FROM DUAL;
+            PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_UNICO('SFTR_OUT_COUNTERPARTY',V_VALOR,RESULTADO);
+            EXIT WHEN RESULTADO<>1;
+         END LOOP;
+         if resultado<>1 then
+            rollback;
+         else
+            commit;
+         end if;
+     dbms_output.put_line(resultado);
+     EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar registros de SFTR_OUT_COUNTERPARTY');
+  END DELETE_STATUS_CTPARTY;
+
+  FUNCTION MODIFY_PAUSED(P_TABLE_NAME IN VARCHAR2, P_PKVALUE IN VARCHAR2) RETURN NUMBER AS
+      V_PK_NAME VARCHAR2(30);
+  BEGIN
+      SELECT TB.COLUMN_NAME INTO V_PK_NAME
+      FROM USER_CONSTRAINTS CONS
+      INNER JOIN USER_CONS_COLUMNS COLS ON CONS.CONSTRAINT_NAME = COLS.CONSTRAINT_NAME 
+      INNER JOIN USER_TAB_COLUMNS TB ON COLS.TABLE_NAME = TB.TABLE_NAME AND COLS.COLUMN_NAME = TB.COLUMN_NAME
+      WHERE COLS.TABLE_NAME = P_TABLE_NAME
+      AND CONS.CONSTRAINT_TYPE = 'P';
+      dbms_output.put_line('UPDATE '||P_TABLE_NAME||' SET ID_STATUS=3 WHERE ID_STATUS=1 AND '||V_PK_NAME||'='''||P_PKVALUE||'''');
+      EXECUTE IMMEDIATE 'UPDATE  CENTRALRE.'||P_TABLE_NAME||' SET ID_STATUS=3 WHERE ID_STATUS=1 AND '||V_PK_NAME||'='''||P_PKVALUE||'''';
+      RETURN SQL%ROWCOUNT;
+  EXCEPTION
+      WHEN OTHERS THEN
+          PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar el STATUS PAUSED de un registro');
+      return 0;
+  END MODIFY_PAUSED;
+
+
+  PROCEDURE MODIFY_PAUSED_CTPARTY(P_ID_COUNTERPARTY IN VARCHAR2, RESULTADO OUT NUMBER) AS 
+     /*Se debe de modificar/avanzar el estado del registro a PAUSED a partir de la PK que se le pase por el INPUT.*/
+  BEGIN
+     RESULTADO:=MODIFY_PAUSED('SFTR_OUT_COUNTERPARTY', P_ID_COUNTERPARTY);
+     IF RESULTADO=1 THEN
+        COMMIT;
+     ELSE
+        ROLLBACK;
+     END IF;
+     dbms_output.put_line(resultado);
+  EXCEPTION
+     WHEN OTHERS THEN
+        RESULTADO:=0;
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar el STATUS PAUSED de un registro');  
+  END MODIFY_PAUSED_CTPARTY;
+
+  PROCEDURE OBTENER_CAMPOS_STATUS_COL(SALIDA OUT SYS_REFCURSOR) AS
+    /* Se debede obtener los datos de la tabla SFTR_OUT_COLLATERAL a mostrar en el datagrid principal de la pantalla STATUS */
+    BEGIN
+        OPEN SALIDA FOR OBTENER_CAMPOS_STATUS('SFTR_OUT_LOAN_COLLATERAL');
+    EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al obtener los campos de status');
+    END OBTENER_CAMPOS_STATUS_COL;
+  PROCEDURE OBTENER_CAMPOS_STATUS_MARGINS(SALIDA OUT SYS_REFCURSOR) AS
+    /* Se debede obtener los datos de la tabla SFTR_OUT_MARGINS a mostrar en el datagrid principal de la pantalla STATUS */
+    BEGIN
+        OPEN SALIDA FOR OBTENER_CAMPOS_STATUS('SFTR_OUT_MARGINS');
+    EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al obtener los campos de status');
+    END OBTENER_CAMPOS_STATUS_MARGINS;
+  PROCEDURE OBTENER_CAMPOS_STATUS_REUSE(SALIDA OUT SYS_REFCURSOR) AS
+    /* Se debede obtener los datos de la tabla SFTR_OUT_REUSE a mostrar en el datagrid principal de la pantalla STATUS */
+    BEGIN
+        OPEN SALIDA FOR OBTENER_CAMPOS_STATUS('SFTR_OUT_REUSE');
+    EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al obtener los campos de status');
+    END OBTENER_CAMPOS_STATUS_REUSE;
+    PROCEDURE MODIFY_PAUSED_REUSE(P_ID_COUNTERPARTY IN VARCHAR2, RESULTADO OUT NUMBER) AS 
+     /*Se debe de modificar/avanzar el estado del registro a PAUSED a partir de la PK que se le pase por el INPUT.*/
+  BEGIN
+     RESULTADO:=MODIFY_PAUSED('SFTR_OUT_REUSE', P_ID_COUNTERPARTY);
+     IF RESULTADO=1 THEN
+        COMMIT;
+     ELSE
+        ROLLBACK;
+     END IF;
+     dbms_output.put_line(resultado);
+  EXCEPTION
+     WHEN OTHERS THEN
+        RESULTADO:=0;
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar el STATUS PAUSED de un registro');  
+  END MODIFY_PAUSED_REUSE;
+PROCEDURE MODIFY_PAUSED_COLLATERAL(P_ID_UTI IN VARCHAR2, RESULTADO OUT NUMBER) AS 
+     /*Se debe de modificar/avanzar el estado del registro a PAUSED a partir de la PK que se le pase por el INPUT.*/
+  BEGIN
+     RESULTADO:=MODIFY_PAUSED('SFTR_OUT_LOAN_COLLATERAL', P_ID_UTI);
+     IF RESULTADO=1 THEN
+        COMMIT;
+     ELSE
+        ROLLBACK;
+     END IF;
+     dbms_output.put_line(resultado);
+  EXCEPTION
+     WHEN OTHERS THEN
+        RESULTADO:=0;
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar el STATUS PAUSED de un registro');  
+  END MODIFY_PAUSED_COLLATERAL;
+PROCEDURE MODIFY_PAUSED_MARGINS(P_ID_COUNTERPARTY IN VARCHAR2, RESULTADO OUT NUMBER) AS 
+     /*Se debe de modificar/avanzar el estado del registro a PAUSED a partir de la PK que se le pase por el INPUT.*/
+  BEGIN
+     RESULTADO:=MODIFY_PAUSED('SFTR_OUT_MARGINS', P_ID_COUNTERPARTY);
+     IF RESULTADO=1 THEN
+        COMMIT;
+     ELSE
+        ROLLBACK;
+     END IF;
+     dbms_output.put_line(resultado);
+  EXCEPTION
+     WHEN OTHERS THEN
+        RESULTADO:=0;
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar el STATUS PAUSED de un registro');  
+  END MODIFY_PAUSED_MARGINS;
+
+  PROCEDURE DELETE_STATUS_COL(P_LIST_ID_USUARIO IN VARCHAR2, RESULTADO OUT NUMBER) AS
+     /*Se deben de eliminar uno o varios registros de la tabla SFTR_OUT_LOAN_COLLATERAL a partir del listado de PKs que se pasarán por el INPUT.*/
+         V_LIST_ID_USUARIO VARCHAR2(4000);
+         V_VALOR varchar2(4000);
+         V_COUNT NUMBER;
+     BEGIN
+         V_LIST_ID_USUARIO := P_LIST_ID_USUARIO || ',';
+         V_COUNT:=LENGTH(V_LIST_ID_USUARIO)-LENGTH(REPLACE(V_LIST_ID_USUARIO,',',''));
+         FOR I IN 1..V_COUNT LOOP
+            SELECT REGEXP_SUBSTR(V_LIST_ID_USUARIO,'[^,]+',1,I) INTO V_VALOR FROM DUAL;
+            PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_UNICO('SFTR_OUT_COUNTERPARTY',V_VALOR,RESULTADO);
+            EXIT WHEN RESULTADO<>1;
+         END LOOP;
+         if resultado<>1 then
+            rollback;
+         else
+            commit;
+         end if;
+     dbms_output.put_line(resultado);
+     EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar registros de SFTR_OUT_LOAN_COLLATERAL');
+  END DELETE_STATUS_COL;
+
+    PROCEDURE DELETE_STATUS_MARGINS(P_LIST_ID_USUARIO IN VARCHAR2, RESULTADO OUT NUMBER) AS
+     /*Se deben de eliminar uno o varios registros de la tabla SFTR_OUT_MARGINS a partir del listado de PKs que se pasarán por el INPUT.*/
+         V_LIST_ID_USUARIO VARCHAR2(4000);
+         V_VALOR varchar2(4000);
+         V_COUNT NUMBER;
+     BEGIN
+         V_LIST_ID_USUARIO := P_LIST_ID_USUARIO || ',';
+         V_COUNT:=LENGTH(V_LIST_ID_USUARIO)-LENGTH(REPLACE(V_LIST_ID_USUARIO,',',''));
+         FOR I IN 1..V_COUNT LOOP
+            SELECT REGEXP_SUBSTR(V_LIST_ID_USUARIO,'[^,]+',1,I) INTO V_VALOR FROM DUAL;
+            PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_UNICO('SFTR_OUT_COUNTERPARTY',V_VALOR,RESULTADO);
+            EXIT WHEN RESULTADO<>1;
+         END LOOP;
+         if resultado<>1 then
+            rollback;
+         else
+            commit;
+         end if;
+     dbms_output.put_line(resultado);
+     EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar registros de SFTR_OUT_MARGINS');
+  END DELETE_STATUS_MARGINS;
+
+    PROCEDURE DELETE_STATUS_REUSE(P_LIST_ID_USUARIO IN VARCHAR2, RESULTADO OUT NUMBER) AS
+     /*Se deben de eliminar uno o varios registros de la tabla SFTR_OUT_REUSE a partir del listado de PKs que se pasarán por el INPUT.*/
+         V_LIST_ID_USUARIO VARCHAR2(4000);
+         V_VALOR varchar2(4000);
+         V_COUNT NUMBER;
+     BEGIN
+         V_LIST_ID_USUARIO := P_LIST_ID_USUARIO || ',';
+         V_COUNT:=LENGTH(V_LIST_ID_USUARIO)-LENGTH(REPLACE(V_LIST_ID_USUARIO,',',''));
+         FOR I IN 1..V_COUNT LOOP
+            SELECT REGEXP_SUBSTR(V_LIST_ID_USUARIO,'[^,]+',1,I) INTO V_VALOR FROM DUAL;
+            PKG_CENTRALREP_SP_STATUS.DELETE_STATUS_UNICO('SFTR_OUT_COUNTERPARTY',V_VALOR,RESULTADO);
+            EXIT WHEN RESULTADO<>1;
+         END LOOP;
+         if resultado<>1 then
+            rollback;
+         else
+            commit;
+         end if;
+     dbms_output.put_line(resultado);
+     EXCEPTION
+        WHEN OTHERS THEN
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al borrar registros de SFTR_OUT_REUSE');
+  END DELETE_STATUS_REUSE;
+
+ PROCEDURE INSERT_STATUS_COL(P_ID_UTI IN VARCHAR2,P_CH_TRACKINGNUM IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SFTTYPE IN VARCHAR2,P_CH_CLEARED IN VARCHAR2,P_DT_CREARTIME IN DATE,
+                                P_CH_CCP IN VARCHAR2,P_CH_TRADVENUE IN VARCHAR2,P_CH_MASTAGREETYPE IN VARCHAR2,P_CH_MASTAGREETYPE2 IN VARCHAR2,P_DT_MASTAGREEVERSION IN DATE,
+                                P_DT_EXETIME IN DATE,P_DT_VALUEDATE IN DATE,P_DT_MATUDATE IN DATE,P_DT_TERMINADATE IN DATE,P_NB_MINPERIOD IN NUMBER,P_DT_CALLBACKDATE IN DATE,
+                                P_CH_GENCOLLIND IN VARCHAR2,P_CH_DBV IN VARCHAR2,P_CH_MPC IN VARCHAR2,P_CH_OPENTERM IN VARCHAR2,P_CH_TERMINAOPTION IN VARCHAR2,P_NB_FIXERATE IN NUMBER,
+                                P_CH_DAYCONVENT IN VARCHAR2,P_CH_FLOATRATE IN VARCHAR2,P_CH_TIMEPERIOD IN VARCHAR2,P_NB_MULTIPLIER IN NUMBER,P_CH_FRPTP IN VARCHAR2,P_NB_FRPM IN NUMBER,
+                                P_CH_FRRTP IN VARCHAR2,P_NB_FRRM IN NUMBER,P_NB_SPREAD IN NUMBER,P_NB_MGLNDCURRAMT IN NUMBER,P_CH_MGLNDCURR IN VARCHAR2,P_NB_ADJUSTRATE IN NUMBER,
+                                P_DT_RATEDATE IN DATE,P_NB_AMTVALUEDT IN NUMBER,P_NB_AMTMATDT IN NUMBER,P_CH_PRINAMTCURR IN VARCHAR2,P_CH_ASSETTYPE IN VARCHAR2,P_CH_SECID IN VARCHAR2,
+                                P_CH_CFI IN VARCHAR2,P_CH_BASEPROD IN VARCHAR2,P_CH_SUBPROD IN VARCHAR2,P_CH_FURSUBPROD IN VARCHAR2,P_NB_NOMINALAMT IN NUMBER,P_CH_MEASUREUNIT IN VARCHAR2,
+                                P_CH_NOMAMTCURR IN VARCHAR2,P_NB_SECCOMPRICE IN NUMBER,P_CH_PRICECURR IN VARCHAR2,P_CH_SECQUALITY IN VARCHAR2,P_DT_MATURSECUR IN DATE,
+                                P_CH_ISSUERJUR IN VARCHAR2,P_CH_ISSUERLEI IN VARCHAR2,P_CH_SECTYPE IN VARCHAR2,P_NB_LOANVALUE IN NUMBER,P_NB_MARKETVALUE IN NUMBER,
+                                P_NB_FIXRBTRATE IN NUMBER,P_CH_FLOATRBTRATE IN VARCHAR2,P_CH_FLOATRBTREFTP IN VARCHAR2,P_NB_FLOATRBTREFM IN NUMBER,P_CH_FLOATRBTFREQTP IN VARCHAR2,
+                                P_NB_FLOATRBTFREQM IN NUMBER,P_CH_FLOATRBTFREQTP2 IN VARCHAR2,P_NB_FLOATRBTFREQM2 IN NUMBER,P_NB_SPREADRBTRATE IN NUMBER,P_NB_LENDFEE IN NUMBER,
+                                P_CH_EXCLUARREN IN VARCHAR2,P_NB_OUTSMGLOAN IN NUMBER,P_CH_BCOMG IN VARCHAR2,P_NB_SHORTMKTVALUE IN NUMBER,P_CH_UNCOLLSL IN VARCHAR2,
+                                P_CH_NETEXPCOLL IN VARCHAR2,P_DT_VALUECOLLADATE IN DATE,P_CH_COLLCOMPTYPE IN VARCHAR2,P_NB_CASHCOLLAMT IN NUMBER,P_CH_CASHCOLLCURR IN VARCHAR2,
+                                P_CH_SECCOLLID IN VARCHAR2,P_CH_SECCOLLCLASS IN VARCHAR2,P_CH_BASEPROD2 IN VARCHAR2,P_CH_SUBPROD2 IN VARCHAR2,P_CH_FURSUBPROD2 IN VARCHAR2,
+                                P_NB_COLLQNAMT IN NUMBER,P_CH_MEACOLLUNIT IN VARCHAR2,P_CH_COLLNOMAMTCURR IN VARCHAR2,P_CH_PRICECURRCOLL IN VARCHAR2,P_NB_PPU IN NUMBER,
+                                P_NB_COLLMRKTVALUE IN NUMBER,P_NB_HAIRCUT IN NUMBER,P_CH_COLLQUALITY IN VARCHAR2,P_DT_MATUSECURDATE IN DATE,P_CH_ISSUERJURCOLL IN VARCHAR2,
+                                P_CH_ISSUERLEICOLL IN VARCHAR2,P_CH_COLLTYPE IN VARCHAR2,P_CH_AVACOLLREUSE IN VARCHAR2,P_CH_COLLBSKTID IN VARCHAR2,P_CH_PORTCODE IN VARCHAR2,
+                                P_CH_ACTTYPE IN VARCHAR2,P_CH_LEVEL IN VARCHAR2,
+                                RESULTADO OUT NUMBER) AS
+    /*Se deben de insertar los datos que tenemos rellenados en nuestro modal e insertarlos en la tabla SFTR_OUT_LOAN_COLLATERAL.*/
+        V_COUNT NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO V_COUNT FROM  CENTRALRE.SFTR_OUT_LOAN_COLLATERAL WHERE ID_UTI=P_ID_UTI;
+         IF V_COUNT=0 THEN       
+            INSERT INTO SFTR_OUT_LOAN_COLLATERAL(ID_UTI ,CH_TRACKINGNUM ,DT_EVENTDATE ,CH_SFTTYPE ,CH_CLEARED ,DT_CREARTIME ,
+                                CH_CCP ,CH_TRADVENUE ,CH_MASTAGREETYPE ,CH_MASTAGREETYPE2 ,DT_MASTAGREEVERSION ,
+                                DT_EXETIME ,DT_VALUEDATE ,DT_MATUDATE ,DT_TERMINADATE ,NB_MINPERIOD ,DT_CALLBACKDATE ,
+                                CH_GENCOLLIND ,CH_DBV ,CH_MPC ,CH_OPENTERM ,CH_TERMINAOPTION ,NB_FIXERATE ,
+                                CH_DAYCONVENT ,CH_FLOATRATE ,CH_TIMEPERIOD ,NB_MULTIPLIER ,CH_FRPTP ,NB_FRPM ,
+                                CH_FRRTP ,NB_FRRM ,NB_SPREAD ,NB_MGLNDCURRAMT ,CH_MGLNDCURR ,NB_ADJUSTRATE ,
+                                DT_RATEDATE ,NB_AMTVALUEDT ,NB_AMTMATDT ,CH_PRINAMTCURR ,CH_ASSETTYPE ,CH_SECID ,
+                                CH_CFI ,CH_BASEPROD ,CH_SUBPROD ,CH_FURSUBPROD ,NB_NOMINALAMT ,CH_MEASUREUNIT ,
+                                CH_NOMAMTCURR ,NB_SECCOMPRICE ,CH_PRICECURR ,CH_SECQUALITY ,DT_MATURSECUR ,
+                                CH_ISSUERJUR ,CH_ISSUERLEI ,CH_SECTYPE ,NB_LOANVALUE ,NB_MARKETVALUE ,
+                                NB_FIXRBTRATE ,CH_FLOATRBTRATE ,CH_FLOATRBTREFTP ,NB_FLOATRBTREFM ,CH_FLOATRBTFREQTP ,
+                                NB_FLOATRBTFREQM ,CH_FLOATRBTFREQTP2 ,NB_FLOATRBTFREQM2 ,NB_SPREADRBTRATE ,NB_LENDFEE ,
+                                CH_EXCLUARREN ,NB_OUTSMGLOAN ,CH_BCOMG ,NB_SHORTMKTVALUE ,CH_UNCOLLSL ,
+                                CH_NETEXPCOLL ,DT_VALUECOLLADATE ,CH_COLLCOMPTYPE ,NB_CASHCOLLAMT ,CH_CASHCOLLCURR ,
+                                CH_SECCOLLID ,CH_SECCOLLCLASS ,CH_BASEPROD2 ,CH_SUBPROD2 ,CH_FURSUBPROD2 ,
+                                NB_COLLQNAMT ,CH_MEACOLLUNIT ,CH_COLLNOMAMTCURR ,CH_PRICECURRCOLL ,NB_PPU ,
+                                NB_COLLMRKTVALUE ,NB_HAIRCUT ,CH_COLLQUALITY ,DT_MATUSECURDATE ,CH_ISSUERJURCOLL ,
+                                CH_ISSUERLEICOLL ,CH_COLLTYPE ,CH_AVACOLLREUSE ,CH_COLLBSKTID ,CH_PORTCODE ,
+                                CH_ACTTYPE ,CH_LEVEL,DT_ATENEACR,ID_STATUS)
+                        VALUES(P_ID_UTI ,P_CH_TRACKINGNUM ,P_DT_EVENTDATE ,P_CH_SFTTYPE ,P_CH_CLEARED ,P_DT_CREARTIME ,
+                                P_CH_CCP ,P_CH_TRADVENUE ,P_CH_MASTAGREETYPE ,P_CH_MASTAGREETYPE2 ,P_DT_MASTAGREEVERSION ,
+                                P_DT_EXETIME ,P_DT_VALUEDATE ,P_DT_MATUDATE ,P_DT_TERMINADATE ,P_NB_MINPERIOD ,P_DT_CALLBACKDATE ,
+                                P_CH_GENCOLLIND ,P_CH_DBV ,P_CH_MPC ,P_CH_OPENTERM ,P_CH_TERMINAOPTION ,P_NB_FIXERATE ,
+                                P_CH_DAYCONVENT ,P_CH_FLOATRATE ,P_CH_TIMEPERIOD ,P_NB_MULTIPLIER ,P_CH_FRPTP ,P_NB_FRPM ,
+                                P_CH_FRRTP ,P_NB_FRRM ,P_NB_SPREAD ,P_NB_MGLNDCURRAMT ,P_CH_MGLNDCURR ,P_NB_ADJUSTRATE ,
+                                P_DT_RATEDATE ,P_NB_AMTVALUEDT ,P_NB_AMTMATDT ,P_CH_PRINAMTCURR ,P_CH_ASSETTYPE ,P_CH_SECID ,
+                                P_CH_CFI ,P_CH_BASEPROD ,P_CH_SUBPROD ,P_CH_FURSUBPROD ,P_NB_NOMINALAMT ,P_CH_MEASUREUNIT ,
+                                P_CH_NOMAMTCURR ,P_NB_SECCOMPRICE ,P_CH_PRICECURR ,P_CH_SECQUALITY ,P_DT_MATURSECUR ,
+                                P_CH_ISSUERJUR ,P_CH_ISSUERLEI ,P_CH_SECTYPE ,P_NB_LOANVALUE ,P_NB_MARKETVALUE ,
+                                P_NB_FIXRBTRATE ,P_CH_FLOATRBTRATE ,P_CH_FLOATRBTREFTP ,P_NB_FLOATRBTREFM ,P_CH_FLOATRBTFREQTP ,
+                                P_NB_FLOATRBTFREQM ,P_CH_FLOATRBTFREQTP2 ,P_NB_FLOATRBTFREQM2 ,P_NB_SPREADRBTRATE ,P_NB_LENDFEE ,
+                                P_CH_EXCLUARREN ,P_NB_OUTSMGLOAN ,P_CH_BCOMG ,P_NB_SHORTMKTVALUE ,P_CH_UNCOLLSL ,
+                                P_CH_NETEXPCOLL ,P_DT_VALUECOLLADATE ,P_CH_COLLCOMPTYPE ,P_NB_CASHCOLLAMT ,P_CH_CASHCOLLCURR ,
+                                P_CH_SECCOLLID ,P_CH_SECCOLLCLASS ,P_CH_BASEPROD2 ,P_CH_SUBPROD2 ,P_CH_FURSUBPROD2 ,
+                                P_NB_COLLQNAMT ,P_CH_MEACOLLUNIT ,P_CH_COLLNOMAMTCURR ,P_CH_PRICECURRCOLL ,P_NB_PPU ,
+                                P_NB_COLLMRKTVALUE ,P_NB_HAIRCUT ,P_CH_COLLQUALITY ,P_DT_MATUSECURDATE ,P_CH_ISSUERJURCOLL ,
+                                P_CH_ISSUERLEICOLL ,P_CH_COLLTYPE ,P_CH_AVACOLLREUSE ,P_CH_COLLBSKTID ,P_CH_PORTCODE ,
+                                P_CH_ACTTYPE ,P_CH_LEVEL, sysdate, 0);
+                        dbms_output.put_line(v_count);
+            RESULTADO:=1;
+        ELSE 
+            RESULTADO:=0;   
+        END IF;
+    dbms_output.put_line(resultado);
+        COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al insertar los datos en SFTR_OUT_LOAN_COLLATERAL');
+   END INSERT_STATUS_COL;
+
+ PROCEDURE MODIFY_STATUS_COL(P_ID_UTI IN VARCHAR2,P_CH_TRACKINGNUM IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SFTTYPE IN VARCHAR2,P_CH_CLEARED IN VARCHAR2,P_DT_CREARTIME IN DATE,
+                                P_CH_CCP IN VARCHAR2,P_CH_TRADVENUE IN VARCHAR2,P_CH_MASTAGREETYPE IN VARCHAR2,P_CH_MASTAGREETYPE2 IN VARCHAR2,P_DT_MASTAGREEVERSION IN DATE,
+                                P_DT_EXETIME IN DATE,P_DT_VALUEDATE IN DATE,P_DT_MATUDATE IN DATE,P_DT_TERMINADATE IN DATE,P_NB_MINPERIOD IN NUMBER,P_DT_CALLBACKDATE IN DATE,
+                                P_CH_GENCOLLIND IN VARCHAR2,P_CH_DBV IN VARCHAR2,P_CH_MPC IN VARCHAR2,P_CH_OPENTERM IN VARCHAR2,P_CH_TERMINAOPTION IN VARCHAR2,P_NB_FIXERATE IN NUMBER,
+                                P_CH_DAYCONVENT IN VARCHAR2,P_CH_FLOATRATE IN VARCHAR2,P_CH_TIMEPERIOD IN VARCHAR2,P_NB_MULTIPLIER IN NUMBER,P_CH_FRPTP IN VARCHAR2,P_NB_FRPM IN NUMBER,
+                                P_CH_FRRTP IN VARCHAR2,P_NB_FRRM IN NUMBER,P_NB_SPREAD IN NUMBER,P_NB_MGLNDCURRAMT IN NUMBER,P_CH_MGLNDCURR IN VARCHAR2,P_NB_ADJUSTRATE IN NUMBER,
+                                P_DT_RATEDATE IN DATE,P_NB_AMTVALUEDT IN NUMBER,P_NB_AMTMATDT IN NUMBER,P_CH_PRINAMTCURR IN VARCHAR2,P_CH_ASSETTYPE IN VARCHAR2,P_CH_SECID IN VARCHAR2,
+                                P_CH_CFI IN VARCHAR2,P_CH_BASEPROD IN VARCHAR2,P_CH_SUBPROD IN VARCHAR2,P_CH_FURSUBPROD IN VARCHAR2,P_NB_NOMINALAMT IN NUMBER,P_CH_MEASUREUNIT IN VARCHAR2,
+                                P_CH_NOMAMTCURR IN VARCHAR2,P_NB_SECCOMPRICE IN NUMBER,P_CH_PRICECURR IN VARCHAR2,P_CH_SECQUALITY IN VARCHAR2,P_DT_MATURSECUR IN DATE,
+                                P_CH_ISSUERJUR IN VARCHAR2,P_CH_ISSUERLEI IN VARCHAR2,P_CH_SECTYPE IN VARCHAR2,P_NB_LOANVALUE IN NUMBER,P_NB_MARKETVALUE IN NUMBER,
+                                P_NB_FIXRBTRATE IN NUMBER,P_CH_FLOATRBTRATE IN VARCHAR2,P_CH_FLOATRBTREFTP IN VARCHAR2,P_NB_FLOATRBTREFM IN NUMBER,P_CH_FLOATRBTFREQTP IN VARCHAR2,
+                                P_NB_FLOATRBTFREQM IN NUMBER,P_CH_FLOATRBTFREQTP2 IN VARCHAR2,P_NB_FLOATRBTFREQM2 IN NUMBER,P_NB_SPREADRBTRATE IN NUMBER,P_NB_LENDFEE IN NUMBER,
+                                P_CH_EXCLUARREN IN VARCHAR2,P_NB_OUTSMGLOAN IN NUMBER,P_CH_BCOMG IN VARCHAR2,P_NB_SHORTMKTVALUE IN NUMBER,P_CH_UNCOLLSL IN VARCHAR2,
+                                P_CH_NETEXPCOLL IN VARCHAR2,P_DT_VALUECOLLADATE IN DATE,P_CH_COLLCOMPTYPE IN VARCHAR2,P_NB_CASHCOLLAMT IN NUMBER,P_CH_CASHCOLLCURR IN VARCHAR2,
+                                P_CH_SECCOLLID IN VARCHAR2,P_CH_SECCOLLCLASS IN VARCHAR2,P_CH_BASEPROD2 IN VARCHAR2,P_CH_SUBPROD2 IN VARCHAR2,P_CH_FURSUBPROD2 IN VARCHAR2,
+                                P_NB_COLLQNAMT IN NUMBER,P_CH_MEACOLLUNIT IN VARCHAR2,P_CH_COLLNOMAMTCURR IN VARCHAR2,P_CH_PRICECURRCOLL IN VARCHAR2,P_NB_PPU IN NUMBER,
+                                P_NB_COLLMRKTVALUE IN NUMBER,P_NB_HAIRCUT IN NUMBER,P_CH_COLLQUALITY IN VARCHAR2,P_DT_MATUSECURDATE IN DATE,P_CH_ISSUERJURCOLL IN VARCHAR2,
+                                P_CH_ISSUERLEICOLL IN VARCHAR2,P_CH_COLLTYPE IN VARCHAR2,P_CH_AVACOLLREUSE IN VARCHAR2,P_CH_COLLBSKTID IN VARCHAR2,P_CH_PORTCODE IN VARCHAR2,
+                                P_CH_ACTTYPE IN VARCHAR2,P_CH_LEVEL IN VARCHAR2,
+                                RESULTADO OUT NUMBER) AS
+        /*Se deben de actualizar los valores que se pasan por el INPUT en el registro en el que coincida la PK.*/
+        V_COUNT NUMBER;
+    BEGIN
+        UPDATE SFTR_OUT_LOAN_COLLATERAL
+            SET CH_TRACKINGNUM=P_CH_TRACKINGNUM,
+                DT_EVENTDATE=P_DT_EVENTDATE,
+                CH_SFTTYPE=P_CH_SFTTYPE,
+                CH_CLEARED=P_CH_CLEARED,
+                DT_CREARTIME=P_DT_CREARTIME,
+                CH_CCP=P_CH_CCP,
+                CH_TRADVENUE=P_CH_TRADVENUE,
+                CH_MASTAGREETYPE=P_CH_MASTAGREETYPE,
+                CH_MASTAGREETYPE2=P_CH_MASTAGREETYPE2,
+                DT_MASTAGREEVERSION=P_DT_MASTAGREEVERSION,
+                DT_EXETIME=P_DT_EXETIME,
+                DT_VALUEDATE=P_DT_VALUEDATE,
+                DT_MATUDATE=P_DT_MATUDATE,
+                DT_TERMINADATE=P_DT_TERMINADATE,
+                NB_MINPERIOD=P_NB_MINPERIOD,
+                DT_CALLBACKDATE=P_DT_CALLBACKDATE,
+                CH_GENCOLLIND=P_CH_GENCOLLIND,
+                CH_DBV=P_CH_DBV,
+                CH_MPC=P_CH_MPC,
+                CH_OPENTERM=P_CH_OPENTERM,
+                CH_TERMINAOPTION=P_CH_TERMINAOPTION,
+                NB_FIXERATE=P_NB_FIXERATE,
+                CH_DAYCONVENT=P_CH_DAYCONVENT,
+                CH_FLOATRATE=P_CH_FLOATRATE,
+                CH_TIMEPERIOD=P_CH_TIMEPERIOD,
+                NB_MULTIPLIER=P_NB_MULTIPLIER,
+                CH_FRPTP=P_CH_FRPTP,
+                NB_FRPM=P_NB_FRPM,
+                CH_FRRTP=P_CH_FRRTP,
+                NB_FRRM=P_NB_FRRM,
+                NB_SPREAD=P_NB_SPREAD,
+                NB_MGLNDCURRAMT=P_NB_MGLNDCURRAMT,
+                CH_MGLNDCURR=P_CH_MGLNDCURR,
+                NB_ADJUSTRATE=P_NB_ADJUSTRATE,
+                DT_RATEDATE=P_DT_RATEDATE,
+                NB_AMTVALUEDT=P_NB_AMTVALUEDT,
+                NB_AMTMATDT=P_NB_AMTMATDT,
+                CH_PRINAMTCURR=P_CH_PRINAMTCURR,
+                CH_ASSETTYPE=P_CH_ASSETTYPE,
+                CH_SECID=P_CH_SECID,
+                CH_CFI=P_CH_CFI,
+                CH_BASEPROD=P_CH_BASEPROD,
+                CH_SUBPROD=P_CH_SUBPROD,
+                CH_FURSUBPROD=P_CH_FURSUBPROD,
+                NB_NOMINALAMT=P_NB_NOMINALAMT,
+                CH_MEASUREUNIT=P_CH_MEASUREUNIT,
+                CH_NOMAMTCURR=P_CH_NOMAMTCURR,
+                NB_SECCOMPRICE=P_NB_SECCOMPRICE,
+                CH_PRICECURR=P_CH_PRICECURR,
+                CH_SECQUALITY=P_CH_SECQUALITY,
+                DT_MATURSECUR=P_DT_MATURSECUR,
+                CH_ISSUERJUR=P_CH_ISSUERJUR,
+                CH_ISSUERLEI=P_CH_ISSUERLEI,
+                CH_SECTYPE=P_CH_SECTYPE,
+                NB_LOANVALUE=P_NB_LOANVALUE,
+                NB_MARKETVALUE=P_NB_MARKETVALUE,
+                NB_FIXRBTRATE=P_NB_FIXRBTRATE,
+                CH_FLOATRBTRATE=P_CH_FLOATRBTRATE,
+                CH_FLOATRBTREFTP=P_CH_FLOATRBTREFTP,
+                NB_FLOATRBTREFM=P_NB_FLOATRBTREFM,
+                CH_FLOATRBTFREQTP=P_CH_FLOATRBTFREQTP,
+                NB_FLOATRBTFREQM=P_NB_FLOATRBTFREQM,
+                CH_FLOATRBTFREQTP2=P_CH_FLOATRBTFREQTP2,
+                NB_FLOATRBTFREQM2=P_NB_FLOATRBTFREQM2,
+                NB_SPREADRBTRATE=P_NB_SPREADRBTRATE,
+                NB_LENDFEE=P_NB_LENDFEE,
+                CH_EXCLUARREN=P_CH_EXCLUARREN,
+                NB_OUTSMGLOAN=P_NB_OUTSMGLOAN,
+                CH_BCOMG=P_CH_BCOMG,
+                NB_SHORTMKTVALUE=P_NB_SHORTMKTVALUE,
+                CH_UNCOLLSL=P_CH_UNCOLLSL,
+                CH_NETEXPCOLL=P_CH_NETEXPCOLL,
+                DT_VALUECOLLADATE=P_DT_VALUECOLLADATE,
+                CH_COLLCOMPTYPE=P_CH_COLLCOMPTYPE,
+                NB_CASHCOLLAMT=P_NB_CASHCOLLAMT,
+                CH_CASHCOLLCURR=P_CH_CASHCOLLCURR,
+                CH_SECCOLLID=P_CH_SECCOLLID,
+                CH_SECCOLLCLASS=P_CH_SECCOLLCLASS,
+                CH_BASEPROD2=P_CH_BASEPROD2,
+                CH_SUBPROD2=P_CH_SUBPROD2,
+                CH_FURSUBPROD2=P_CH_FURSUBPROD2,
+                NB_COLLQNAMT=P_NB_COLLQNAMT,
+                CH_MEACOLLUNIT=P_CH_MEACOLLUNIT,
+                CH_COLLNOMAMTCURR=P_CH_COLLNOMAMTCURR,
+                CH_PRICECURRCOLL=P_CH_PRICECURRCOLL,
+                NB_PPU=P_NB_PPU,
+                NB_COLLMRKTVALUE=P_NB_COLLMRKTVALUE,
+                NB_HAIRCUT=P_NB_HAIRCUT,
+                CH_COLLQUALITY=P_CH_COLLQUALITY,
+                DT_MATUSECURDATE=P_DT_MATUSECURDATE,
+                CH_ISSUERJURCOLL=P_CH_ISSUERJURCOLL,
+                CH_ISSUERLEICOLL=P_CH_ISSUERLEICOLL,
+                CH_COLLTYPE=P_CH_COLLTYPE,
+                CH_AVACOLLREUSE=P_CH_AVACOLLREUSE,
+                CH_COLLBSKTID=P_CH_COLLBSKTID,
+                CH_PORTCODE=P_CH_PORTCODE,
+                CH_ACTTYPE=P_CH_ACTTYPE,
+                CH_LEVEL=P_CH_LEVEL,
+                ID_STATUS=0
+            WHERE ID_UTI=P_ID_UTI;
+        RESULTADO:=SQL%ROWCOUNT;
+        COMMIT; 
+        dbms_output.put_line(resultado);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar algún campo de SFTR_OUT_LOAN_COLLATERAL');                                                   
+    END MODIFY_STATUS_COL;
+
+    PROCEDURE INSERT_STATUS_MARGINS(P_ID_COUNTERPARTY IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SUBMITENTITY IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COUNTER2 IN VARCHAR2,
+                                    P_CH_PORTCODE IN VARCHAR2,P_NB_INIMGPOST IN NUMBER,P_CH_INIMGPOSTCURR IN VARCHAR2,P_NB_VARMGPOST IN NUMBER,P_CH_VARMGPOSTCURR IN VARCHAR2,
+                                    P_NB_INIMGRECE IN NUMBER,P_CH_INIMGRECECURR IN VARCHAR2,P_NB_VARMGRECE IN NUMBER,P_CH_VARMGRECECURR IN VARCHAR2,P_NB_EXCESSCOLLPOST IN NUMBER,
+                                    P_CH_EXCESSCOLLPOSTCURR IN VARCHAR2,P_NB_EXCESSCOLLRECE IN NUMBER,P_CH_EXCESSCOLLRECECURR IN VARCHAR2,P_CH_ACTTYPE IN VARCHAR2,
+                                   RESULTADO OUT NUMBER) AS
+    /*Se deben de insertar los datos que tenemos rellenados en nuestro modal e insertarlos en la tabla SFTR_OUT_LOAN_COLLATERAL.*/
+        V_COUNT NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO V_COUNT FROM  CENTRALRE.SFTR_OUT_MARGINS WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+         IF V_COUNT=0 THEN       
+            INSERT INTO SFTR_OUT_MARGINS(DT_ATENEACR,ID_COUNTERPARTY ,DT_EVENTDATE ,CH_SUBMITENTITY ,CH_ENTITYRESPON ,CH_COUNTER2 ,CH_PORTCODE ,NB_INIMGPOST ,CH_INIMGPOSTCURR ,NB_VARMGPOST ,
+                                         CH_VARMGPOSTCURR ,NB_INIMGRECE ,CH_INIMGRECECURR ,NB_VARMGRECE ,CH_VARMGRECECURR ,NB_EXCESSCOLLPOST ,CH_EXCESSCOLLPOSTCURR ,NB_EXCESSCOLLRECE ,
+                                         CH_EXCESSCOLLRECECURR ,CH_ACTTYPE,ID_STATUS )
+                        VALUES(SYSDATE,P_ID_COUNTERPARTY ,P_DT_EVENTDATE ,P_CH_SUBMITENTITY ,P_CH_ENTITYRESPON ,P_CH_COUNTER2 ,P_CH_PORTCODE ,P_NB_INIMGPOST ,P_CH_INIMGPOSTCURR ,P_NB_VARMGPOST ,
+                               P_CH_VARMGPOSTCURR ,P_NB_INIMGRECE ,P_CH_INIMGRECECURR ,P_NB_VARMGRECE ,P_CH_VARMGRECECURR ,P_NB_EXCESSCOLLPOST ,P_CH_EXCESSCOLLPOSTCURR ,P_NB_EXCESSCOLLRECE ,
+                               P_CH_EXCESSCOLLRECECURR ,P_CH_ACTTYPE , 0);
+                        dbms_output.put_line(v_count);
+            RESULTADO:=1;
+        ELSE 
+            RESULTADO:=0;   
+        END IF;
+    dbms_output.put_line(resultado);
+        COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al insertar los datos en SFTR_OUT_MARGINS');
+   END INSERT_STATUS_MARGINS;
+
+    PROCEDURE MODIFY_STATUS_MARGINS(P_ID_COUNTERPARTY IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SUBMITENTITY IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COUNTER2 IN VARCHAR2,
+                                    P_CH_PORTCODE IN VARCHAR2,P_NB_INIMGPOST IN NUMBER,P_CH_INIMGPOSTCURR IN VARCHAR2,P_NB_VARMGPOST IN NUMBER,P_CH_VARMGPOSTCURR IN VARCHAR2,
+                                    P_NB_INIMGRECE IN NUMBER,P_CH_INIMGRECECURR IN VARCHAR2,P_NB_VARMGRECE IN NUMBER,P_CH_VARMGRECECURR IN VARCHAR2,P_NB_EXCESSCOLLPOST IN NUMBER,
+                                    P_CH_EXCESSCOLLPOSTCURR IN VARCHAR2,P_NB_EXCESSCOLLRECE IN NUMBER,P_CH_EXCESSCOLLRECECURR IN VARCHAR2,P_CH_ACTTYPE IN VARCHAR2,
+                                   RESULTADO OUT NUMBER) AS
+        /*Se deben de actualizar los valores que se pasan por el INPUT en el registro en el que coincida la PK.*/
+        V_COUNT NUMBER;
+    BEGIN
+        UPDATE SFTR_OUT_MARGINS
+            SET DT_EVENTDATE=P_DT_EVENTDATE,
+                CH_SUBMITENTITY=P_CH_SUBMITENTITY,
+                CH_ENTITYRESPON=P_CH_ENTITYRESPON,
+                CH_COUNTER2=P_CH_COUNTER2,
+                CH_PORTCODE=P_CH_PORTCODE,
+                NB_INIMGPOST=P_NB_INIMGPOST,
+                CH_INIMGPOSTCURR=P_CH_INIMGPOSTCURR,
+                NB_VARMGPOST=P_NB_VARMGPOST,
+                CH_VARMGPOSTCURR=P_CH_VARMGPOSTCURR,
+                NB_INIMGRECE=P_NB_INIMGRECE,
+                CH_INIMGRECECURR=P_CH_INIMGRECECURR,
+                NB_VARMGRECE=P_NB_VARMGRECE,
+                CH_VARMGRECECURR=P_CH_VARMGRECECURR,
+                NB_EXCESSCOLLPOST=P_NB_EXCESSCOLLPOST,
+                CH_EXCESSCOLLPOSTCURR=P_CH_EXCESSCOLLPOSTCURR,
+                NB_EXCESSCOLLRECE=P_NB_EXCESSCOLLRECE,
+                CH_EXCESSCOLLRECECURR=P_CH_EXCESSCOLLRECECURR,
+                CH_ACTTYPE=P_CH_ACTTYPE
+            WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+        RESULTADO:=SQL%ROWCOUNT;
+        COMMIT; 
+        dbms_output.put_line(resultado);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar algún campo de SFTR_OUT_MARGINS');                                      
+    END MODIFY_STATUS_MARGINS;
+
+PROCEDURE INSERT_STATUS_REUSE(P_ID_COUNTERPARTY IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SUBMITENTITY IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COLLCOMPTYPE IN VARCHAR2,
+                                  P_CH_COLLCOMP IN VARCHAR2,P_NB_COLLVALUE IN NUMBER,P_NB_COLLEST IN NUMBER,P_CH_COLLCURR IN VARCHAR2,P_NB_REINVESTRATE IN NUMBER,P_CH_REINVESTYPE IN VARCHAR2,
+                                  P_NB_REINVESTCASHAMT IN NUMBER,P_CH_REINVESTCASHCURR IN VARCHAR2,P_CH_FUNSOUR IN VARCHAR2,P_NB_FUNSOURMRKTVALUE IN NUMBER,P_CH_FUNSOURCURR IN VARCHAR2,
+                                  P_CH_ACTTYPE IN VARCHAR2,
+                                  RESULTADO OUT NUMBER) AS 
+        /*Se deben de insertar los datos que tenemos rellenados en nuestro modal e insertarlos en la tabla SFTR_OUT_LOAN_COLLATERAL.*/
+        V_COUNT NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO V_COUNT FROM  CENTRALRE.SFTR_OUT_REUSE WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+         IF V_COUNT=0 THEN       
+            INSERT INTO SFTR_OUT_REUSE(DT_ATENEACR,DT_EVENTDATE , CH_SUBMITENTITY ,ID_COUNTERPARTY ,CH_ENTITYRESPON ,CH_COLLCOMPTYPE ,CH_COLLCOMP ,NB_COLLVALUE ,NB_COLLEST ,CH_COLLCURR ,
+                                         NB_REINVESTRATE ,CH_REINVESTYPE ,NB_REINVESTCASHAMT ,CH_REINVESTCASHCURR,CH_FUNSOUR ,NB_FUNSOURMRKTVALUE,CH_FUNSOURCURR ,CH_ACTTYPE ,ID_STATUS)
+                        VALUES(SYSDATE,P_DT_EVENTDATE ,p_CH_SUBMITENTITY,P_ID_COUNTERPARTY,P_CH_ENTITYRESPON,P_CH_COLLCOMPTYPE,P_CH_COLLCOMP ,P_NB_COLLVALUE ,P_NB_COLLEST,
+            P_CH_COLLCURR,P_NB_REINVESTRATE ,P_CH_REINVESTYPE ,P_NB_REINVESTCASHAMT ,P_CH_REINVESTCASHCURR ,P_CH_FUNSOUR ,P_NB_FUNSOURMRKTVALUE ,
+            P_CH_FUNSOURCURR,P_CH_ACTTYPE , 0);
+                        dbms_output.put_line(v_count);
+            RESULTADO:=1;
+        ELSE 
+            RESULTADO:=0;   
+        END IF;
+    dbms_output.put_line(resultado);
+        COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al insertar los datos en SFTR_OUT_REUSE');                        
+
+    END INSERT_STATUS_REUSE;
+
+  PROCEDURE MODIFY_STATUS_REUSE(P_ID_COUNTERPARTY IN VARCHAR2,P_DT_EVENTDATE IN DATE,P_CH_SUBMITENTITY IN VARCHAR2,P_CH_ENTITYRESPON IN VARCHAR2,P_CH_COLLCOMPTYPE IN VARCHAR2,
+                                  P_CH_COLLCOMP IN VARCHAR2,P_NB_COLLVALUE IN NUMBER,P_NB_COLLEST IN NUMBER,P_CH_COLLCURR IN VARCHAR2,P_NB_REINVESTRATE IN NUMBER,P_CH_REINVESTYPE IN VARCHAR2,
+                                  P_NB_REINVESTCASHAMT IN NUMBER,P_CH_REINVESTCASHCURR IN VARCHAR2,P_CH_FUNSOUR IN VARCHAR2,P_NB_FUNSOURMRKTVALUE IN NUMBER,P_CH_FUNSOURCURR IN VARCHAR2,
+                                  P_CH_ACTTYPE IN VARCHAR2,
+                                  RESULTADO OUT NUMBER) AS
+    /*Se deben de actualizar los valores que se pasan por el INPUT en el registro en el que coincida la PK.*/
+        V_COUNT NUMBER;
+    BEGIN
+        UPDATE SFTR_OUT_REUSE
+            SET DT_EVENTDATE=P_DT_EVENTDATE,
+                CH_SUBMITENTITY=P_CH_SUBMITENTITY,
+                CH_ENTITYRESPON=P_CH_ENTITYRESPON,
+                CH_COLLCOMPTYPE=P_CH_COLLCOMPTYPE,
+                CH_COLLCOMP=P_CH_COLLCOMP,
+                NB_COLLVALUE=P_NB_COLLVALUE,
+                NB_COLLEST=P_NB_COLLEST,
+                CH_COLLCURR=P_CH_COLLCURR,
+                NB_REINVESTRATE=P_NB_REINVESTRATE,
+                CH_REINVESTYPE=P_CH_REINVESTYPE,
+                NB_REINVESTCASHAMT=P_NB_REINVESTCASHAMT,
+                CH_REINVESTCASHCURR=P_CH_REINVESTCASHCURR,
+                CH_FUNSOUR=P_CH_FUNSOUR,
+                NB_FUNSOURMRKTVALUE=P_NB_FUNSOURMRKTVALUE,
+                CH_FUNSOURCURR=P_CH_FUNSOURCURR,
+                CH_ACTTYPE=P_CH_ACTTYPE
+            WHERE ID_COUNTERPARTY=P_ID_COUNTERPARTY;
+        RESULTADO:=SQL%ROWCOUNT;
+        COMMIT; 
+        dbms_output.put_line(resultado);
+    EXCEPTION
+        WHEN OTHERS THEN
+            RESULTADO:=0;
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error al modificar algún campo de SFTR_OUT_REUSE');     
+    END MODIFY_STATUS_REUSE;
+
+END PKG_CENTRALREP_SP_STATUS;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_VALIDACIONES
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_VALIDACIONES" AS
+
+
+  PROCEDURE VALIDA_SFTR_OUT_COUNTERPARTY AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_VALIDA.VALIDA_SFTR_OUT_COUNTERPARTY
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error VALIDA_SFTR_OUT_COUNTERPARTY');
+  END VALIDA_SFTR_OUT_COUNTERPARTY;
+
+  PROCEDURE VALIDA_SFTR_OUT_LOAN_COL AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_VALIDA.VALIDA_SFTR_OUT_LOAN_COL
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error VALIDA_SFTR_OUT_LOAN_COL');
+  END VALIDA_SFTR_OUT_LOAN_COL;
+
+  PROCEDURE VALIDA_SFTR_OUT_MARGINS AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_VALIDA.VALIDA_SFTR_OUT_MARGINS
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error VALIDA_SFTR_OUT_MARGINS');
+  END VALIDA_SFTR_OUT_MARGINS;
+
+  PROCEDURE VALIDA_SFTR_OUT_REUSE AS
+  BEGIN
+    -- TAREA: Se necesita implantación para PROCEDURE PKG_CENTRALREP_VALIDA.VALIDA_SFTR_OUT_REUSE
+    NULL;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error VALIDA_SFTR_OUT_REUSE');
+  END VALIDA_SFTR_OUT_REUSE;
+
+  PROCEDURE VALIDA_SFTR AS
+  BEGIN
+  --llamamos a los 4 procedimientos para mapear las tablas OUT
+      VALIDA_SFTR_OUT_COUNTERPARTY;
+      VALIDA_SFTR_OUT_LOAN_COL;
+      VALIDA_SFTR_OUT_MARGINS;
+      VALIDA_SFTR_OUT_REUSE;
+  END VALIDA_SFTR;
+
+  FUNCTION COND_CTPARTY_ADSECTORCLASS(P_CTPARTY_ROW IN SFTR_OUT_COUNTERPARTY%ROWTYPE) RETURN NUMBER AS
+    BEGIN
+	    IF P_CTPARTY_ROW.CH_SECTOR IN ('UCIT','AIFD','K','L') THEN
+		    RETURN 1;
+		ELSE
+		    RETURN -1;
+		END IF;
+	END COND_CTPARTY_ADSECTORCLASS;
+
+	FUNCTION COND_CTPARTY_CLEARINGMEMB(P_CTPARTY_ROW IN SFTR_OUT_COUNTERPARTY%ROWTYPE) RETURN NUMBER AS
+	/* Falta por implementar en realidad porque es con un campo de la tabla SFTR_OUT_LOAN_COLLATERAL */
+	    BEGIN
+             CASE WHEN  P_CTPARTY_ROW.CH_NATURE = 'F' THEN
+		            RETURN 1;
+		        WHEN P_CTPARTY_ROW.CH_NATURE = 'N' THEN
+		            RETURN -1;
+			    ELSE
+			        RETURN 0;
+			 END CASE;	 						
+	END COND_CTPARTY_CLEARINGMEMB;
+
+    FUNCTION COND_LOAN_TRACKINGNUM(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    CASE WHEN P_LOAN_ROW.CH_CLEARED ='TRUE'  THEN -- AND P_LOAN_ROW.CH_CCP <> CTPARTY.ID_COUNTERPARTY falta por implementar por el cruce 
+		         RETURN 1;
+		     WHEN P_LOAN_ROW.CH_CLEARED ='FALSE' THEN
+			     RETURN -1;
+		     ELSE
+			     RETURN 0;
+		END CASE;		    
+	END  COND_LOAN_TRACKINGNUM;
+
+	FUNCTION COND_LOAN_CREAR_CCP(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    CASE WHEN P_LOAN_ROW.CH_CLEARED='TRUE' THEN
+		        RETURN 1;
+             WHEN P_LOAN_ROW.CH_CLEARED='FALSE' THEN
+                RETURN -1;
+             ELSE
+                RETURN 0;
+        END CASE;				
+	END COND_LOAN_CREAR_CCP;
+
+	FUNCTION COND_LOAN_MAT2(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_MASTAGREETYPE='OTHR' THEN
+		   RETURN 1;
+        ELSE
+           RETURN -1;
+        END IF;				
+	END COND_LOAN_MAT2;
+
+    FUNCTION COND_LOAN_MAV(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_MASTAGREETYPE NOT IN ('BIAG','CSDA','OTHR') THEN
+		   RETURN 1;
+        ELSE
+           RETURN -1;
+        END IF;				
+	END COND_LOAN_MAV;
+
+	FUNCTION COND_LOAN_MATUDATE(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	/* Aunque el texto de la validación dice más cosas en reallidad esa condición de REPOs y SL ya la hacemos 
+	   al llamarla como C y lo otro llamarlo como M
+	*/
+	    IF P_LOAN_ROW.CH_OPENTERM ='FALSE' THEN
+		   RETURN 1;
+        ELSE
+           RETURN -1;
+        END IF;				
+	END COND_LOAN_MATUDATE;
+
+    FUNCTION COND_LOAN_MINPERIOD(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_OPENTERM ='TRUE' OR (P_LOAN_ROW.CH_TERMINAOPTION = 'EGRN' OR P_LOAN_ROW.CH_TERMINAOPTION = 'ETSB') THEN
+		   RETURN 1;
+        ELSE
+           RETURN 0;
+        END IF;				
+	END COND_LOAN_MINPERIOD;
+
+	FUNCTION COND_LOAN_GENCOL_MPC(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_UNCOLLSL ='FALSE' AND P_LOAN_ROW.CH_COLLCOMPTYPE = 'SECU' THEN
+		   RETURN 1;
+        ELSE
+           RETURN 0;
+        END IF;				
+	END COND_LOAN_GENCOL_MPC;
+
+	FUNCTION COND_LOAN_RATE_FX(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_FLOATRATE IS NULL THEN
+		   RETURN 1;
+        ELSE
+           RETURN -1;
+        END IF;				
+	END COND_LOAN_RATE_FX;
+
+    FUNCTION COND_LOAN_RATE_FL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.NB_FIXERATE IS NULL THEN
+		   RETURN 1;
+        ELSE
+           RETURN -1;
+        END IF;				
+	END COND_LOAN_RATE_FL;
+
+	FUNCTION COND_LOAN_DAYCONVENT(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.NB_FIXERATE IS NOT NULL OR P_LOAN_ROW.CH_FLOATRATE IS NOT NULL THEN
+		    RETURN 1;
+		ELSE
+		    RETURN 0;
+		END IF;
+	END COND_LOAN_DAYCONVENT;
+
+	FUNCTION COND_LOAN_PERIOD(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_FLOATRATE IS NOT NULL THEN
+		    RETURN 1;
+		ELSE
+		    RETURN -1;
+		END IF;
+	END COND_LOAN_PERIOD;
+
+	FUNCTION COND_LOAN_RATEDATE(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.NB_ADJUSTRATE IS NOT NULL THEN
+		    RETURN 1;
+		ELSE
+		    RETURN -1;
+		END IF;
+	END COND_LOAN_RATEDATE;
+
+	FUNCTION COND_LOAN_AMTMATDT(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_OPENTERM='FALSE' AND P_LOAN_ROW.NB_FIXERATE IS NOT NULL THEN
+		    RETURN 1;
+		ELSE
+		    RETURN 0;
+		END IF;
+	END COND_LOAN_AMTMATDT;
+
+	FUNCTION COND_LOAN_SECID_CFI(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_ASSETTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE
+		   RETURN -1;
+		END IF;
+	END COND_LOAN_SECID_CFI;
+
+	FUNCTION COND_LOAN_BASEPROD(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_ASSETTYPE='COMM' THEN
+		   RETURN 1;
+		ELSE
+		   RETURN -1;
+		END IF;
+	END COND_LOAN_BASEPROD;
+
+	FUNCTION COND_LOAN_SUBPROD(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_BASEPROD IN ('AGRI','NRGY','ENVR','FRGT','FRTL','INDP','METL','PAPR','POLY') THEN
+		   RETURN 1;
+		ELSE
+		   RETURN -1;
+		END IF;
+	END COND_LOAN_SUBPROD;
+
+	FUNCTION COND_LOAN_FURSUBPROD(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_SUBPROD IN ('GROS','SOFT','OOLI','GRIN','ELEC','NGAS','OILP','EMIS','WETF','DRYF','NPRM','PRME') THEN
+		   RETURN 1;
+		ELSE
+		   RETURN -1;
+		END IF;
+	END COND_LOAN_FURSUBPROD;
+
+	FUNCTION COND_LOAN_SECCOMPRICE(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_ASSETTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE IF P_LOAN_ROW.CH_ASSETTYPE='COMM' THEN
+		    RETURN -1; 
+		ELSE
+		    RETURN 0;
+        END IF;
+		END IF;
+	END COND_LOAN_SECCOMPRICE;
+
+	FUNCTION COND_LOAN_ISSUER(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_ASSETTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_ISSUER;
+
+	FUNCTION COND_LOAN_RBT_FX(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_NETEXPCOLL='FALSE' AND P_LOAN_ROW.CH_FLOATRBTRATE IS NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_RBT_FX;
+
+	FUNCTION COND_LOAN_RBT_FL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_NETEXPCOLL='FALSE' AND P_LOAN_ROW.NB_FIXRBTRATE IS NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_RBT_FL;
+
+	FUNCTION COND_LOAN_RBT_FL_TI(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_FLOATRBTRATE IS NOT NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_RBT_FL_TI;
+
+	FUNCTION COND_LOAN_LENDING(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_NETEXPCOLL='FALSE' AND P_LOAN_ROW.NB_FIXRBTRATE IS NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_LENDING;
+
+	FUNCTION COND_LOAN_NETEXPCOLL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_UNCOLLSL ='FALSE' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_NETEXPCOLL;
+
+	FUNCTION COND_LOAN_VALUECOLLADATE(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_NETEXPCOLL='TRUE' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_VALUECOLLADATE;
+
+	FUNCTION COND_LOAN_COLLCOMPTYPE_N_P_S(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_UNCOLLSL='TRUE' THEN
+		   RETURN -1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_COLLCOMPTYPE_N_P_S;
+
+	FUNCTION COND_LOAN_COLLCOMPTYPE_C_C(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLBSKTID IS NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_COLLCOMPTYPE_C_C;
+
+	FUNCTION COND_LOAN_CASHCOL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE='CASH' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_CASHCOL;
+
+	FUNCTION COND_LOAN_SECUCOL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_SECUCOL;
+
+	FUNCTION COND_LOAN_COMMCOL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE='COMM' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_COMMCOL;
+
+
+	FUNCTION COND_LOAN_COMMSECUCOL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE='COMM' OR  P_LOAN_ROW.CH_COLLCOMPTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_COMMSECUCOL;
+
+	FUNCTION COND_LOAN_CASHSECUCOL(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE='COMM' OR  P_LOAN_ROW.CH_COLLCOMPTYPE='SECU' THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN -1; 
+		END IF;
+	END COND_LOAN_CASHSECUCOL;
+
+    FUNCTION COND_LOAN_COLLCOMPTYPE_C_C2(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_COLLCOMPTYPE IS NULL THEN
+		   RETURN 1;
+		ELSE 
+		    RETURN 0; 
+		END IF;
+	END COND_LOAN_COLLCOMPTYPE_C_C2;
+
+	 FUNCTION COND_LOAN_PORTFOLIO(P_LOAN_ROW IN SFTR_OUT_LOAN_COLLATERAL%ROWTYPE) RETURN NUMBER AS
+	BEGIN
+	    IF P_LOAN_ROW.CH_CLEARED ='TRUE'  THEN -- AND P_LOAN_ROW.CH_CCP <> CTPARTY.ID_COUNTERPARTY falta por implementar por el cruce 
+		    RETURN 1;
+		ELSE 
+			RETURN -1;
+		END IF;    
+	END  COND_LOAN_PORTFOLIO;
+    
+    /*PROCEDURE VALIDA_FORMATO_CAMPO_TABLA(P_TABLA IN VARCHAR2) AS
+
+    BEGIN
+       OPEN V_REFCUR FOR 'SELECT * FROM '||P_TABLA||' WHERE ID_STATUS=0';
+       LOOP
+           FETCH V_REFCUR INTO V_LINEA;
+           EXIT WHEN v_refcur%NOTFOUND;
+           DBMS_OUTPUT.PUT_LINE('HOLA');
+        END LOOP;
+    END VALIDA_FORMATO_CAMPO_TABLA;*/
+    
+    PROCEDURE VALIDA_FORMATO_CAMPO AS
+        V_RESULTADO NUMBER;
+        V_VALOR VARCHAR2(10);
+        v_refcur SYS_REFCURSOR;
+        v_pk  CENTRALRE_ERRORES.ID_ID%TYPE;
+    BEGIN 
+   
+     FOR REG IN (SELECT * FROM CENTRALRE_AUX_OUT_VALORES) 
+    LOOP
+            --Recuperamos la tabla de output del reporte a validar
+        begin
+            /*SELECT LISTAGG(column_name,' || '','' || ') within group (order by column_position) INTO v_pk FROM all_ind_columns 
+            WHERE index_owner = 'CENTRAL_REP' AND table_name = v_tabla AND index_name like '%PK_%';*/
+            SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_pk   FROM USER_ind_columns 
+            WHERE table_name = REG.CH_tabla AND index_name like '%PK_%';
+            v_pk := substr(trim(v_pk),1, length(trim(v_pk))-1);
+            
+        exception when others then
+            PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error recuperanddo pk de tabla');
+        end;
+        --DBMS_OUTPUT.PUT_LINE('SELECT '||REG.CH_CAMPO||' FROM '||REG.CH_TABLA||' V '||V_PK);
+        -- eL PROBLEMA QUE VEO ES CONSEGUIR LOS CAMPOS DE LA PK ADEMÁS DEL VALOR SI FUERA UNO ES SENCILLO PERO AL SER VARIABLES...
+        OPEN V_REFCUR FOR 'SELECT '||REG.CH_CAMPO||', '||V_PK||' FROM '||REG.CH_TABLA||' WHERE '||REG.CH_CAMPO||' IS NOT NULL AND ID_STATUS=0';
+        LOOP
+            FETCH V_REFCUR INTO V_VALOR;
+            EXIT WHEN v_refcur%NOTFOUND;
+            V_RESULTADO:=0;
+              FOR I IN 1..REG.NT_VALORES.COUNT LOOP
+                  IF V_VALOR = REG.NT_VALORES(I) THEN
+                      V_RESULTADO:=1;
+                      EXIT;
+                  END IF;
+               END LOOP;
+            IF V_RESULTADO=0 THEN
+               DBMS_OUTPUT.PUT_LINE('Aqui fue mal la validacion '||reg.ch_campo||' con valor '||v_valor||' y '||V_PK);
+                INSERT INTO centralre_errores (id_entidad,id_aplicacion,id_reporte,id_id,id_tipo_error,ch_campo,ch_valor) 
+                VALUES (1,1,1,'HOLA',1,REG.CH_CAMPO,V_VALOR);
+                COMMIT;
+                DBMS_OUTPUT.PUT_LINE('UPDATE  '|| REG.CH_TABLA || ' SET status = 2 WHERE status <> 2 and ' || v_pk || ' IN (Select distinct id_id FROM centralre_errores )');
+--EXECUTE IMMEDIATE 'UPDATE  '|| REG.CH_TABLA || ' SET status = 2 WHERE status <> 2 and ' || v_pk || 'IN (Select distinct id_id FROM centralre_errores )';
+            END IF;
+        END LOOP;
+    END LOOP;
+    END VALIDA_FORMATO_CAMPO;
+END PKG_CENTRALREP_VALIDACIONES;
+--------------------------------------------------------
+--  DDL for Package Body PKG_CENTRALREP_VAL_MANDATORIES
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_CENTRALREP_VAL_MANDATORIES" AS
+
+  PROCEDURE VALIDAR_CAMPO(p_entidad IN NUMBER, p_aplicacion IN NUMBER, p_reporte IN NUMBER, p_tipo_vaidacion IN CHAR) AS
+      v_query varchar2(500);
+      v_tabla varchar2(100);
+      v_pk  varchar2(100);
+      v_error varchar2(100);
+      v_refcur      SYS_REFCURSOR;
+      v_refcur1      SYS_REFCURSOR;
+      v_tipologia   CENTRALRE_DEF_MANDATORIES.ID_TIPOLOGIA%TYPE;
+      v_campo   CENTRALRE_DEF_MANDATORIES.ID_CAMPO%TYPE;
+      v_accion CENTRALRE_DEF_MANDATORIES.CH_ACCION%TYPE;
+  BEGIN
+    --Recuperamos la tabla de output del reporte a validar
+    begin
+        SELECT CH_TABLA_OUT INTO v_tabla
+        FROM centralre_aux_reportes 
+        where id_entidad = p_entidad  AND id_aplicacion = p_aplicacion AND id_reporte = p_reporte;
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error en tabla de aplicaciones');
+    end;
+    --Recuperamos la PK de la tabla
+    begin
+        /*SELECT LISTAGG(column_name,' || '','' || ') within group (order by column_position) INTO v_pk FROM all_ind_columns 
+        WHERE index_owner = 'CENTRAL_REP' AND table_name = v_tabla AND index_name like '%PK_%';*/
+
+        SELECT xmlAGG(XMLELEMENT(e,column_name,',').EXTRACT('//text()') ).GetClobVal() INTO v_pk  FROM USER_ind_columns 
+        WHERE table_name = v_tabla AND index_name like '%PK_%';
+        v_pk := substr(trim(v_pk),1, length(trim(v_pk))-1);
+    exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error recuperanddo pk de tabla');
+    end;
+    --Buscamos los campos nulos por tipología
+    OPEN v_refcur FOR 'SELECT ID_TIPOLOGIA, ID_CAMPO, CH_ACCION FROM CENTRALRE_DEF_MANDATORIES WHERE id_entidad =' || p_entidad || ' AND id_aplicacion =' || p_aplicacion || ' AND id_reporte =' || p_reporte;
+    LOOP
+        FETCH v_refcur INTO v_tipologia, v_campo, v_accion;
+        EXIT WHEN v_refcur%NOTFOUND;
+        IF p_tipo_vaidacion = 'M' THEN
+            IF v_tipologia = 0 THEN
+                v_query := 'SELECT '|| v_pk || ' FROM ' || v_tabla || ' WHERE ' || v_campo || ' is null and ch_actype = ' || v_accion || ' AND id_status = 0 ';
+            ELSE
+                v_query := 'SELECT '|| v_pk || ' FROM ' || v_tabla || ' WHERE ' || v_campo || ' is null and nb_tipología = ' || v_tipologia || ' and ch_actype = ' || v_accion || ' AND id_status = 0 ';
+            END IF;
+        ELSE
+            IF v_tipologia = 0 THEN
+                v_query := 'SELECT '|| v_pk || ' FROM ' || v_tabla || ' WHERE ' || v_campo || ' is not null and ch_actype = ' || v_accion || ' AND id_status = 0 ';
+            ELSE
+                v_query := 'SELECT '|| v_pk || ' FROM ' || v_tabla || ' WHERE ' || v_campo || ' is not null and nb_tipología = ' || v_tipologia || ' and ch_actype = ' || v_accion || ' AND id_status = 0 ';
+            END IF;
+        END IF;
+        --Buscamos por cada tipología y campo mandatary los que estan a nulo
+        OPEN v_refcur1 FOR v_query;
+        LOOP
+            FETCH v_refcur1 INTO v_error;
+            EXIT WHEN v_refcur1%NOTFOUND;
+            --Insertamos en la tabla de errores los registros que están a nulo (Como tipo de error ponemos el 1 que será MANDATORY)
+                INSERT INTO centralre_errores (id_entidad,id_aplicacion,id_reporte,id_id,id_tipo_error,ch_campo,ch_valor) 
+                VALUES (p_entidad,p_aplicacion,p_reporte,v_error,1,v_campo,null);
+        END LOOP;
+         CLOSE v_refcur1;
+        COMMIT;
+    END LOOP;
+    CLOSE v_refcur;
+
+    --Actualizamos los registros para los que hemos insertado error a estado 2- NOT VALIDATED
+    EXECUTE IMMEDIATE 'UPDATE ' || v_tabla || ' SET status = 2 WHERE status <> 2 and ' || v_pk || 'IN (Select distinct id_id FROM centralre_errores )';
+    COMMIT;
+
+   exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error en proceso validacion mandatories');
+  END VALIDAR_CAMPO;
+
+  PROCEDURE VALIDAR(p_entidad IN NUMBER, p_aplicacion IN NUMBER) AS
+  v_refcur  SYS_REFCURSOR;
+  v_reporte NUMBER(3);
+  v_tipo_val char(1);
+  BEGIN
+    --Empezamos por los Mandatories
+    OPEN v_refcur FOR 'SELECT distinct ID_REPORTE, ID_TIPO_VALIDACION FROM CENTRALRE_DEF_MANDATORIES WHERE (ID_TIPO_VALIDACION = ''M'' or ID_TIPO_VALIDACION = ''-'') and id_entidad =' || p_entidad || ' AND id_aplicacion =' || p_aplicacion ;
+    LOOP
+        FETCH v_refcur INTO v_reporte,v_tipo_val;
+        EXIT WHEN v_refcur%NOTFOUND;
+        VALIDAR_CAMPO(p_entidad, p_aplicacion, v_reporte,v_tipo_val);
+    END LOOP;
+    CLOSE v_refcur;
+    --Fin de Mandatories
+   exception when others then
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error en proceso validacion mandatories');
+  END VALIDAR;
+
+END PKG_CENTRALREP_VAL_MANDATORIES;
+--------------------------------------------------------
+--  DDL for Package Body PKG_EXTRACCION
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_EXTRACCION" IS
+
+    PROCEDURE EXPORT_XML ( 
+    p_data_file IN VARCHAR2, p_tabla varchar2, p_query varchar2) IS
+      F UTL_FILE.FILE_TYPE;
+       MYCLOB CLOB;
+       v_ctx   DBMS_XMLGEN.ctxhandle;
+       v_more  BOOLEAN := TRUE;
+    BEGIN
+    --ORACLE 11 y superior
+      --SELECT DBMS_XMLGEN.GETXML(p_query) INTO MYCLOB FROM DUAL;
+    --Oracle 10 
+        -- Create XML context.
+          v_ctx := DBMS_XMLGEN.newcontext(p_query);         
+          -- Set parameters to alter default Rowset and Row tag names and default case.
+          DBMS_XMLGEN.setrowsettag(v_ctx, p_tabla); 
+          DBMS_XMLGEN.setrowtag(v_ctx, 'ROW'); 
+          -- Create the XML document.
+          MYCLOB := DBMS_XMLGEN.getxml(v_ctx);
+          DBMS_XMLGEN.closecontext(v_ctx);
+    --  
+      -- Extracción fichero XML
+      F := UTL_FILE.FOPEN(p_dir,p_data_file,'w');
+      WHILE v_more LOOP
+        UTL_FILE.put(f, SUBSTR(MYCLOB, 1, 32767));
+        IF LENGTH(MYCLOB) > 32767 THEN
+          MYCLOB :=  SUBSTR(MYCLOB, 32768);
+        ELSE
+          v_more := FALSE;
+        END IF;
+      END LOOP;
+      UTL_FILE.FCLOSE(F);
+
+    EXCEPTION
+      WHEN OTHERS THEN
+        UTL_FILE.FCLOSE(F);
+        PKG_LOGS_ERRORES.GSF_P_REGISTRA_ERROR2('Error en extracción de XML de' || p_tabla);
+    END;
+
+  PROCEDURE EXPORT_CVS (
+    p_data_file IN VARCHAR2, p_tabla varchar2, p_delimitador varchar2, p_query varchar2) IS
+    /*Procedimiento que dado una tabla/vista y el nombre de un fichero exporta a CSV los datos de todos los campos de la tabla */
+    v_finaltxt VARCHAR2(4000);
+    v_v_val VARCHAR2(4000);
+    v_n_val NUMBER;
+    v_d_val DATE;
+    v_t_val TIMESTAMP;
+    v_ret NUMBER;
+    c integer;
+    d NUMBER;
+    col_cnt INTEGER;
+    f BOOLEAN;
+    rec_tab DBMS_SQL.DESC_TAB;
+    col_num NUMBER;
+    v_fh UTL_FILE.FILE_TYPE;
+    --p_dir VARCHAR2(16) := 'SQLTEMP2';
+BEGIN
+  c := DBMS_SQL.OPEN_CURSOR;
+  DBMS_SQL.PARSE(c, p_query , DBMS_SQL.NATIVE);
+  d := DBMS_SQL.EXECUTE(c);
+  DBMS_SQL.DESCRIBE_COLUMNS(c, col_cnt, rec_tab);
+  FOR j in 1..col_cnt
+  LOOP
+    CASE rec_tab(j).col_type
+      WHEN 1 THEN DBMS_SQL.DEFINE_COLUMN(c,j,v_v_val,2000);
+      WHEN 2 THEN DBMS_SQL.DEFINE_COLUMN(c,j,v_n_val);
+      WHEN 12 THEN DBMS_SQL.DEFINE_COLUMN(c,j,v_d_val);
+      WHEN 180 THEN DBMS_SQL.DEFINE_COLUMN(c,j,v_t_val);
+    ELSE
+      DBMS_SQL.DEFINE_COLUMN(c,j,v_v_val,2000);
+    END CASE;
+   END LOOP;
+
+    v_fh := UTL_FILE.FOPEN(upper(p_dir),p_data_file,'w');
+
+    FOR j in 1..col_cnt
+    LOOP
+        v_finaltxt := ltrim(v_finaltxt||p_delimitador||lower(rec_tab(j).col_name),p_delimitador);
+    END LOOP;
+    UTL_FILE.PUT_LINE(v_fh, v_finaltxt);
+
+    LOOP
+      v_ret := DBMS_SQL.FETCH_ROWS(c);
+      EXIT WHEN v_ret = 0;
+      v_finaltxt := NULL;
+      FOR j in 1..col_cnt
+        LOOP
+          CASE rec_tab(j).col_type
+                    WHEN 1 THEN DBMS_SQL.COLUMN_VALUE(c,j,v_v_val);
+                    IF v_v_val is null THEN
+                            v_finaltxt := ltrim(v_finaltxt||p_delimitador);
+                        ELSE
+                            v_finaltxt := ltrim(v_finaltxt||v_v_val ||p_delimitador);
+                    END IF;
+                    WHEN 2 THEN DBMS_SQL.COLUMN_VALUE(c,j,v_n_val);
+                    IF v_n_val is null THEN
+                            v_finaltxt := ltrim(v_finaltxt||p_delimitador);
+                        ELSE
+                            v_finaltxt := ltrim(v_finaltxt||v_n_val||p_delimitador);
+                    END IF;
+
+                    WHEN 12 THEN DBMS_SQL.COLUMN_VALUE(c,j,v_d_val);
+                    IF v_d_val is null THEN
+                            v_finaltxt := ltrim(v_finaltxt||p_delimitador);
+                        ELSE
+                            v_finaltxt := ltrim(v_finaltxt||to_char(v_d_val,'DD/MM/YYYY HH24:MI:SS')||p_delimitador);
+                    END IF;
+                    WHEN 180 THEN DBMS_SQL.COLUMN_VALUE(c,j,v_t_val);
+                    IF v_t_val is null THEN
+                            v_finaltxt := ltrim(v_finaltxt||p_delimitador);
+                        ELSE
+                            v_finaltxt := ltrim(v_finaltxt||to_char(v_t_val,'DD/MM/YYYY HH24:MI:SS')||p_delimitador);
+                    END IF;                  
+                  ELSE
+                        IF v_v_val is null THEN
+                            v_finaltxt := ltrim(v_finaltxt||p_delimitador);
+                        ELSE
+                            v_finaltxt := ltrim(v_finaltxt||'"'||v_v_val||'"'||p_delimitador);
+                        END IF;
+                  END CASE;
+        END LOOP;
+  -- DBMS_OUTPUT.PUT_LINE(v_finaltxt);
+  v_finaltxt := substr(v_finaltxt,1,length(v_finaltxt)-1);
+      UTL_FILE.PUT_LINE(v_fh, v_finaltxt);
+    END LOOP;
+    UTL_FILE.FCLOSE(v_fh);
+    DBMS_SQL.CLOSE_CURSOR(c);
+
+END;
+
+PROCEDURE extracciones_tablas (p_cadena IN VARCHAR2 default 0)
+IS
+/*Procedimiento que busca en la tabla CONF_TAB_EXTRACCION
+  las tablas/vistas a exportar a CSV y genera los ficheros de extracción*/
+  emp_refcur      SYS_REFCURSOR;
+  v_query varchar(4000);
+  existe_tabla BOOLEAN;
+  name_tables CENTRALRE_CONF_TAB_EXTRACCION%ROWTYPE;
+  v_plsql varchar(4000) := 'SELECT * FROM CENTRALRE_CONF_TAB_EXTRACCION';  
+BEGIN
+  /*Si la cadena es 0 o negativa extrae todos las tablas del catálogo*/
+  IF p_cadena > 0 THEN v_plsql := v_plsql || ' WHERE CADENA = ' || p_cadena; end if;
+
+  OPEN emp_refcur  FOR v_plsql;
+  LOOP
+    FETCH emp_refcur INTO name_tables;
+        EXIT WHEN emp_refcur%NOTFOUND;
+    /*Si la query es nula se sacan todos los campos de la tabla indicada. Si no se extraen los campos que devuelve la query*/
+    IF name_tables.query is null THEN
+        v_query :=  'select * from ' || name_tables.nombre_tabla;
+    ELSE
+        v_query:=   name_tables.query;
+    END IF;
+    /*Si el campo orden no es nulo se añade en la query para que ordene según lo indicado*/
+    IF name_tables.orden is not null THEN
+        v_query :=  v_query || ' order by ' || name_tables.orden;
+    END IF;
+    /*Si el formato es EXCEL se ejecuta el paquete as_xlsx, sino el export_csv pasándole por parámetro el separador de campos*/
+    IF name_tables.FORMAT_DEL = 'EXCEL' THEN
+        as_xlsx.query2sheet( v_query );
+        as_xlsx.save( p_dir, name_tables.nombre_tabla||'.xlsx' );
+        --as_xlsx.save( p_dir, name_tables.nombre_tabla||'-'||TO_CHAR(sysdate,'DD-MM-YYYY')||'.xlsx' );
+    ELSIF name_tables.FORMAT_DEL = 'CSV' THEN
+        EXPORT_CVS(name_tables.nombre_tabla||'.csv',name_tables.nombre_tabla, name_tables.FORMAT_DEL, v_query);
+        --EXPORT_CVS(name_tables.nombre_tabla||'-'||TO_CHAR(sysdate,'DD-MM-YYYY')||'.csv',name_tables.nombre_tabla, name_tables.FORMAT_DEL, v_query);
+    ELSIF name_tables.FORMAT_DEL = 'XML' THEN
+        EXPORT_XML(name_tables.nombre_tabla||'.XML',name_tables.nombre_tabla, v_query);
+        --EXPORT_XML(name_tables.nombre_tabla||'-'||TO_CHAR(sysdate,'DD-MM-YYYY')||'.XML',name_tables.nombre_tabla, v_query);
+    END IF;
+  END LOOP;
+END;
+
+END PKG_EXTRACCION;
+--------------------------------------------------------
+--  DDL for Package Body PKG_LOGS_ERRORES
+--------------------------------------------------------
+
+  CREATE OR REPLACE PACKAGE BODY "PKG_LOGS_ERRORES" 
+AS
+
+
+PROCEDURE GSF_P_REGISTRA_ERROR (   cERROR_ID      IN VARCHAR2 
+                                                   , cERROR_MESSAGE IN VARCHAR2
+                                                   , cERROR_SOURCE  IN VARCHAR2 DEFAULT NULL                                                    
+                                                 ) IS
+
+   PRAGMA AUTONOMOUS_TRANSACTION;
+
+BEGIN
+   INSERT INTO  CENTRALRE.CENTRALRE_LOG_ERROR1   
+                                ( ID_ERROR, 
+                                  ERROR_MESSAGE, 
+                                  ERROR_DATE, 
+                                  USUARIO, 
+                                  ERROR_SOURCE)
+   VALUES (substr(cERROR_ID,1,100),
+           substr(cERROR_MESSAGE,1,3000),
+           sysdate,
+           SYS_CONTEXT ('USERENV', 'OS_USER'),
+           --substr(cERROR_SOURCE,1,100));
+           replace(DBMS_UTILITY.FORMAT_ERROR_STACK,chr(10),'')||' '||SUBSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, 12));
+
+   COMMIT;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+END GSF_P_REGISTRA_ERROR;
+
+PROCEDURE GSF_P_REGISTRA_ERROR2 ( p_info varchar2 default null) IS
+   PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  INSERT INTO  CENTRALRE.CENTRALRE_LOG_ERROR2 (
+                                  ID_ERROR,  
+                                  CODE,
+                                  MESSAGE, 
+                                  INFO,
+                                  PROCESS,
+                                  LINE,
+                                  ERROR_DATE, 
+                                  ERROR_USER)
+  VALUES (
+    SEQ_LOG_ERROR2.NEXTVAL,
+    substr(DBMS_UTILITY.FORMAT_ERROR_STACK,0, 9),
+    substr(DBMS_UTILITY.FORMAT_ERROR_STACK,12, length(DBMS_UTILITY.FORMAT_ERROR_STACK)-12),
+    p_info,
+    substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE,16,INSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE,',')-17),
+    to_number(rtrim(substr(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE,INSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE,' ',-1)+1),chr(10))),
+    sysdate,
+    SYS_CONTEXT ('USERENV', 'OS_USER'));
+  COMMIT;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    dbms_output.put_line(SQLCODE||' -ERROR- '||SQLERRM);
+    ROLLBACK;
+END GSF_P_REGISTRA_ERROR2;
+
+PROCEDURE GSF_P_REGISTRA_TRAZA (   cNOMBRE_SQL     IN VARCHAR2 
+                                                   , cDESCRIPCION    IN VARCHAR2
+                                                   , nPASO           IN NUMBER   DEFAULT NULL 
+                                                   , cNOMBRE_PRO_FUN IN VARCHAR2 DEFAULT NULL 
+                                                   , cUSUARIO        IN VARCHAR2 DEFAULT NULL                                                    
+                                                   , cCOD_ERROR      IN VARCHAR2 DEFAULT NULL  
+                                                   , cDESC_ERROR     IN VARCHAR2 DEFAULT NULL 
+                                                   , cPARAMETROS     IN VARCHAR2 DEFAULT NULL 
+                                                 ) IS
+
+   PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+   INSERT INTO  CENTRALRE.CENTRALRE_LOG_PROCESO  
+                                (CDNOMSQL,
+                                 DESCRIPC,     
+                                 CDNOMPRO,
+                                 CDUSUARI,
+                                 NUCDPASO,                         
+                                 CODERROR,
+                                 DESERROR,
+                                 TXPARAME,
+                                 FECHALOG)
+   VALUES (substr(cNOMBRE_SQL,1,5000),
+           substr(cDESCRIPCION,1,500),
+           substr(cNOMBRE_PRO_FUN,1,100),
+           substr(nvl(cUSUARIO,USER),1,50),
+           nPASO,           
+           substr(cCOD_ERROR,1,1000),
+           substr(cDESC_ERROR,1,1000),
+           substr(cPARAMETROS,1,500),
+           sysdate
+           );
+   COMMIT;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+
+END GSF_P_REGISTRA_TRAZA;
+
+  END PKG_LOGS_ERRORES;
+
